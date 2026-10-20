@@ -8,8 +8,8 @@ Protocol) server via a built-in ACP client.
 
 - Clients speak the OpenAI Chat Completions API (`/v1/models`, `/v1/chat/completions`).
 - Each configured "model" maps to an ACP agent command. The proxy spawns the
-  agent as a subprocess, speaks JSON-RPC 2.0 over its stdin/stdout, and
-  translates `session/update` notifications into OpenAI streaming chunks.
+  agent as a subprocess and talks ACP via [coder/acp-go-sdk](https://github.com/coder/acp-go-sdk),
+  translating `session/update` notifications into OpenAI streaming chunks.
 - `agent_message_chunk` updates become assistant message content, streamed
   via SSE or aggregated for non-streaming requests.
 - Every request opens a fresh ACP session: the OpenAI message history is
