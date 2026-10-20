@@ -1,14 +1,17 @@
 // acp-proxy is a web server exposing an OpenAI-compatible API that routes
-// requests to ACP (Agent Client Protocol) agents.
+// requests to ACP (Agent Client Protocol) agents. Zero-config: running it
+// with no arguments starts a server on 127.0.0.1:8080; every option is
+// available as a flag and as an ACP_PROXY_* environment variable.
 package main
 
 import (
 	"context"
-	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"acp-proxy/internal/config"
@@ -16,24 +19,31 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "config.json", "path to the JSON configuration file")
-	addr := flag.String("addr", "", "listen address, overriding the configuration file")
-	flag.Parse()
-
-	cfg, err := config.Load(*configPath)
+	opts, err := config.Parse(os.Args[1:], os.Getenv)
 	if err != nil {
 		log.Fatalf("acp-proxy: %v", err)
 	}
-	if *addr != "" {
-		cfg.Addr = *addr
+
+	models := make([]string, 0, len(opts.Agents))
+	for _, a := range opts.Agents {
+		models = append(models, a.Model)
+	}
+	if len(models) == 0 {
+		log.Printf("acp-proxy: no agents configured; configure one with -agent \"[name=]command [args...]\" or %sAGENTS", "ACP_PROXY_")
+	} else {
+		log.Printf("acp-proxy: models: %s", strings.Join(models, ", "))
+	}
+	if opts.AutoPermissions {
+		log.Print("acp-proxy: permission requests are auto-approved (-auto)")
 	}
 
 	mux := http.NewServeMux()
-	openai.New(cfg).Register(mux)
-	server := &http.Server{Addr: cfg.Addr, Handler: mux}
+	openai.New(opts).Register(mux)
+	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	server := &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
-		log.Printf("acp-proxy: listening on %s (%d model(s))", cfg.Addr, len(cfg.Agents))
+		log.Printf("acp-proxy: listening on %s", addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("acp-proxy: %v", err)
 		}

@@ -15,11 +15,11 @@ import (
 
 // Server serves the OpenAI-compatible API backed by ACP agents.
 type Server struct {
-	cfg *config.Config
+	cfg *config.Options
 }
 
-// New builds a Server from the loaded configuration.
-func New(cfg *config.Config) *Server {
+// New builds a Server from the resolved options.
+func New(cfg *config.Options) *Server {
 	return &Server{cfg: cfg}
 }
 
@@ -64,9 +64,8 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	agent := acp.Agent{
 		Command:     agentCfg.Command,
 		Args:        agentCfg.Args,
-		Dir:         agentCfg.Dir,
-		Env:         envSlice(agentCfg.Env),
-		Permissions: agentCfg.Permissions,
+		Dir:         s.cfg.Dir,
+		Permissions: s.cfg.PermissionPolicy(),
 	}
 	session, err := acp.Start(r.Context(), agent)
 	if err != nil {
@@ -193,14 +192,6 @@ func buildPrompt(messages []Message) string {
 		}
 	}
 	return strings.TrimSuffix(sb.String(), "\n")
-}
-
-func envSlice(env map[string]string) []string {
-	out := make([]string, 0, len(env))
-	for k, v := range env {
-		out = append(out, k+"="+v)
-	}
-	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

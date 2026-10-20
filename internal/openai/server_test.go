@@ -26,15 +26,17 @@ func TestMockAgentProcess(t *testing.T) {
 
 func testServer(t *testing.T, mode, permissions string) *httptest.Server {
 	t.Helper()
-	cfg := &config.Config{
-		Addr: "127.0.0.1:0",
-		Agents: []config.AgentConfig{{
-			Model:      "mock",
-			Command:    os.Args[0],
-			Args:       []string{"-test.run=TestMockAgentProcess"},
-			Env:        map[string]string{"ACP_MOCK_AGENT": "1", "ACP_MOCK_MODE": mode},
-			Permissions: permissions,
+	t.Setenv("ACP_MOCK_AGENT", "1")
+	t.Setenv("ACP_MOCK_MODE", mode)
+	cfg := &config.Options{
+		Host: "127.0.0.1",
+		Port: 0,
+		Agents: []config.Agent{{
+			Model:   "mock",
+			Command: os.Args[0],
+			Args:    []string{"-test.run=TestMockAgentProcess"},
 		}},
+		AutoPermissions: permissions == "auto",
 	}
 	mux := http.NewServeMux()
 	New(cfg).Register(mux)

@@ -17,39 +17,33 @@ Protocol) server via a built-in ACP client.
 
 ## Run
 
+Zero-config: the server starts with sane defaults and serves an empty model
+list until an agent is configured.
+
 ```sh
 go build -o acp-proxy .
-./acp-proxy -config config.json        # -addr overrides the listen address
+./acp-proxy                 # 127.0.0.1:8080
+./acp-proxy 8080            # positional port
+./acp-proxy -agent "claude-code=npx -y @zed-industries/claude-code-acp"
 ```
 
-## Configure
+## Options
 
-JSON config file (see `config.example.json`):
+Every option is a flag and an environment variable. Precedence, highest
+first: positional port, flags, environment, defaults.
 
-```json
-{
-  "addr": "127.0.0.1:8080",
-  "agents": [
-    {
-      "model": "claude-code",
-      "command": "npx",
-      "args": ["-y", "@zed-industries/claude-code-acp"],
-      "dir": ".",
-      "permissions": "cancel"
-    }
-  ]
-}
-```
+| Flag | Environment | Default | Meaning |
+|---|---|---|---|
+| (positional) | — | — | listen port |
+| `-port` | `ACP_PROXY_PORT` | `8080` | listen port |
+| `-host` | `ACP_PROXY_HOST` | `127.0.0.1` | listen host |
+| `-agent` (repeatable) | `ACP_PROXY_AGENTS` (`;`-separated) | none | agent spec `[name=]command [args...]` |
+| `-dir` | `ACP_PROXY_DIR` | current directory | working directory for agent sessions |
+| `-auto` | `ACP_PROXY_AUTO` | off | auto-approve permission requests |
 
-Per-agent fields:
-
-| Field | Meaning |
-|---|---|
-| `model` | Name exposed through the OpenAI API |
-| `command`, `args` | ACP agent subprocess to spawn |
-| `dir` | Working directory for the agent and the ACP session `cwd` |
-| `env` | Extra environment variables for the agent |
-| `permissions` | `cancel` (default): permission requests are answered "cancelled"; `auto`: the first `allow_*` option is selected |
+An agent spec without a `name=` prefix is exposed as the model `default`.
+Agents inherit the proxy's environment. Without `-auto`, agent permission
+requests are answered "cancelled".
 
 ## API
 
