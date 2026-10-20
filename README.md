@@ -17,9 +17,9 @@ Protocol) server via a built-in ACP client, backed by
   distributions run through `npx -y` (which fetches the package), binary
   distributions are downloaded, sha256-verified and extracted to a cache
   directory.
-- Each request gets a fresh ACP session on a freshly spawned agent
-  process, so different agents can be used in parallel and requests never
-  share state. The OpenAI message history is rendered as a single prompt
+- Each request gets a fresh ACP session on the agent's pooled process, so
+  different agents can be used in parallel and requests never share
+  state. The OpenAI message history is rendered as a single prompt
   transcript for context.
 - `agent_message_chunk` updates become assistant message content, streamed
   via SSE or aggregated for non-streaming requests.
@@ -43,13 +43,16 @@ proxy's environment.
 
 ## API
 
+Every completion request is scoped to one agent through the URL prefix.
+
 - `GET /v1/models` — every known agent: the ACP registry plus any
   statically declared agents.
 - `GET /{agent}/v1/models` — one agent.
 - `POST /{agent}/v1/chat/completions` — completion routed to that agent,
   spawned on demand. Same body shape as OpenAI (`messages`, `stream`).
-- `POST /v1/chat/completions` — without a prefix, the `model` field
-  selects the agent.
+
+The unprefixed `POST /v1/chat/completions` is not supported and returns
+404 with a hint.
 
 Stop-reason mapping: `end_turn`/`cancelled` → `stop`, `max_tokens`/
 `max_turn_requests` → `length`, `refusal` → `content_filter`.

@@ -49,8 +49,10 @@ func testServer(t *testing.T, mode, permissions string) *httptest.Server {
 	t.Setenv("ACP_MOCK_AGENT", "1")
 	t.Setenv("ACP_MOCK_MODE", mode)
 	t.Setenv("MOCK_PERMISSIONS", permissions)
+	pool := acp.NewPool()
+	t.Cleanup(pool.Close)
 	mux := http.NewServeMux()
-	New(&fakeResolver{}).Register(mux)
+	New(&fakeResolver{}, pool).Register(mux)
 	return httptest.NewServer(mux)
 }
 
@@ -147,21 +149,18 @@ func TestChatCompletionNonStreaming(t *testing.T) {
 	}
 }
 
-func TestChatCompletionUnprefixedModelFallback(t *testing.T) {
+func TestChatCompletionUnprefixedRejected(t *testing.T) {
 	srv := testServer(t, "plain", "cancel")
 	defer srv.Close()
 
-	// Without a prefix, the model field selects the agent.
+	// The unprefixed endpoint is not supported; requests must select an
+	// agent through the path prefix.
 	resp, body := post(t, srv.URL+"/v1/chat/completions", chatBody("mock", false))
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404, body = %s", resp.StatusCode, body)
 	}
-	var cc ChatCompletionResponse
-	if err := json.Unmarshal([]byte(body), &cc); err != nil {
-		t.Fatal(err)
-	}
-	if cc.Choices[0].Message.Content != "Hello ACP" {
-		t.Errorf("content = %q", cc.Choices[0].Message.Content)
+	if !strings.Contains(body, "path prefix") {
+		t.Errorf("error should point at the prefix requirement: %s", body)
 	}
 }
 
@@ -226,12 +225,7 @@ func TestUnknownAgent(t *testing.T) {
 
 	resp, body := post(t, srv.URL+"/missing/v1/chat/completions", chatBody("missing", false))
 	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("prefixed status = %d, want 404, body = %s", resp.StatusCode, body)
-	}
-
-	resp, body = post(t, srv.URL+"/v1/chat/completions", chatBody("missing", false))
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("unprefixed status = %d, want 404, body = %s", resp.StatusCode, body)
+		t.Errorf("status = %d, want 404, body = %s", resp.StatusCode, body)
 	}
 }
 

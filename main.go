@@ -60,7 +60,9 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	openai.New(resolver).Register(mux)
+	pool := acp.NewPool()
+	defer pool.Close()
+	openai.New(resolver, pool).Register(mux)
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 	server := &http.Server{Addr: addr, Handler: mux}
 

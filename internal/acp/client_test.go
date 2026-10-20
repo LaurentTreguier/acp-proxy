@@ -21,33 +21,51 @@ func TestMockAgentProcess(t *testing.T) {
 
 func mockAgent(mode, permissions string) Agent {
 	return Agent{
-		Command: os.Args[0],
-		Args:    []string{"-test.run=TestMockAgentProcess"},
-		Env:     []string{"ACP_MOCK_AGENT=1", "ACP_MOCK_MODE=" + mode},
+		Command:     os.Args[0],
+		Args:        []string{"-test.run=TestMockAgentProcess"},
+		Env:         []string{"ACP_MOCK_AGENT=1", "ACP_MOCK_MODE=" + mode},
 		Permissions: permissions,
 	}
 }
 
-func TestPromptEndToEnd(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	s, err := Start(ctx, mockAgent("plain", "cancel"))
+// session opens a pooled session for a fresh pool.
+func session(t *testing.T, mode, permissions string) (*Pool, *Session) {
+	t.Helper()
+	pool := NewPool()
+	sess, err := pool.Session(context.Background(), "mock", mockAgent(mode, permissions))
 	if err != nil {
-		t.Fatalf("Start: %v", err)
+		pool.Close()
+		t.Fatalf("Session: %v", err)
 	}
-	defer s.Close()
+	t.Cleanup(pool.Close)
+	if sess.SessionID() != "sess-1" {
+		t.Errorf("SessionID = %q, want sess-1", sess.SessionID())
+	}
+	return pool, sess
+}
 
-	if s.SessionID() != "sess-1" {
-		t.Errorf("SessionID = %q, want sess-1", s.SessionID())
+func promptText(t *testing.T, sess *Session) string {
+	t.Helper()
+	var sb textCollector
+	stop, err := sess.Prompt(context.Background(), "hello", sb.append)
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
 	}
+	if stop != StopEndTurn {
+		t.Errorf("stop reason = %q, want %q", stop, StopEndTurn)
+	}
+	return sb.String()
+}
+
+func TestPromptEndToEnd(t *testing.T) {
+	_, sess := session(t, "plain", "cancel")
 
 	var texts, thoughts []string
-	stop, err := s.Prompt(ctx, "hello", func(u Update) {
+	stop, err := sess.Prompt(context.Background(), "hello", func(u Update) {
 		switch u.Kind {
-		case "agent_message_chunk":
+		case KindAgentMessage:
 			texts = append(texts, u.Text)
-		case "agent_thought_chunk":
+		case KindAgentThought:
 			thoughts = append(thoughts, u.Text)
 		}
 	})
@@ -68,63 +86,92 @@ func TestPromptEndToEnd(t *testing.T) {
 	}
 }
 
+func TestPoolReusesProcess(t *testing.T) {
+	pool, _ := session(t, "plain", "cancel")
+
+	sess1, err := pool.Session(context.Background(), "mock", mockAgent("plain", "cancel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess2, err := pool.Session(context.Background(), "mock", mockAgent("plain", "cancel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := promptText(t, sess1); got != "Hello ACP" {
+		t.Errorf("sess1 content = %q", got)
+	}
+	if got := promptText(t, sess2); got != "Hello ACP" {
+		t.Errorf("sess2 content = %q", got)
+	}
+
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	if len(pool.procs) != 1 {
+		t.Errorf("pool holds %d processes, want 1 (one per agent)", len(pool.procs))
+	}
+}
+
+func TestPoolRespawnsDeadProcess(t *testing.T) {
+	pool, sess := session(t, "plain", "cancel")
+	if got := promptText(t, sess); got != "Hello ACP" {
+		t.Fatalf("first turn content = %q", got)
+	}
+
+	// Kill the pooled process behind the pool's back.
+	pool.mu.Lock()
+	proc := pool.procs["mock"]
+	pool.mu.Unlock()
+	proc.Close()
+
+	sess2, err := pool.Session(context.Background(), "mock", mockAgent("plain", "cancel"))
+	if err != nil {
+		t.Fatalf("Session after agent death: %v", err)
+	}
+	if got := promptText(t, sess2); got != "Hello ACP" {
+		t.Errorf("respawned turn content = %q, want Hello ACP", got)
+	}
+}
+
+func TestPoolRespawnsAfterCrash(t *testing.T) {
+	pool, _ := session(t, "plain", "cancel")
+	pool.mu.Lock()
+	proc := pool.procs["mock"]
+	pool.mu.Unlock()
+
+	// The pool evicts a process that dies mid-handshake.
+	proc.process.Process.Kill()
+	time.Sleep(100 * time.Millisecond)
+
+	sess2, err := pool.Session(context.Background(), "mock", mockAgent("plain", "cancel"))
+	if err != nil {
+		t.Fatalf("Session after crash: %v", err)
+	}
+	if got := promptText(t, sess2); got != "Hello ACP" {
+		t.Errorf("content after respawn = %q", got)
+	}
+}
+
 func TestPermissionAuto(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	s, err := Start(ctx, mockAgent("permission", "auto"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer s.Close()
-
-	var sb textCollector
-	stop, err := s.Prompt(ctx, "hello", sb.append)
-	if err != nil {
-		t.Fatalf("Prompt: %v", err)
-	}
-	if stop != StopEndTurn {
-		t.Errorf("stop reason = %q, want %q", stop, StopEndTurn)
-	}
-	if got := sb.String(); got != "Hello ACP" {
-		t.Errorf("content = %q, want %q", got, "Hello ACP")
+	_, sess := session(t, "permission", "auto")
+	if got := promptText(t, sess); got != "Hello ACP" {
+		t.Errorf("content = %q, want Hello ACP (auto policy selects allow)", got)
 	}
 }
 
 func TestPermissionCancel(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	s, err := Start(ctx, mockAgent("permission", "cancel"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer s.Close()
-
-	var sb textCollector
-	stop, err := s.Prompt(ctx, "hello", sb.append)
-	if err != nil {
-		t.Fatalf("Prompt: %v", err)
-	}
-	if stop != StopEndTurn {
-		t.Errorf("stop reason = %q, want %q", stop, StopEndTurn)
-	}
-	if got := sb.String(); got != "denied" {
-		t.Errorf("content = %q, want %q (default policy cancels permissions)", got, "denied")
+	_, sess := session(t, "permission", "cancel")
+	if got := promptText(t, sess); got != "denied" {
+		t.Errorf("content = %q, want denied (default policy cancels permissions)", got)
 	}
 }
 
 func TestContextCancellation(t *testing.T) {
-	s, err := Start(context.Background(), mockAgent("hang", "cancel"))
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer s.Close()
+	_, sess := session(t, "hang", "cancel")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	stop, err := s.Prompt(ctx, "hello", func(Update) {})
+	stop, err := sess.Prompt(ctx, "hello", func(Update) {})
 	if err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -136,7 +183,7 @@ func TestContextCancellation(t *testing.T) {
 type textCollector struct{ b []byte }
 
 func (c *textCollector) append(u Update) {
-	if u.Kind == "agent_message_chunk" {
+	if u.Kind == KindAgentMessage {
 		c.b = append(c.b, u.Text...)
 	}
 }
