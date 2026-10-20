@@ -17,10 +17,10 @@ Protocol) server via a built-in ACP client, backed by
   distributions run through `npx -y` (which fetches the package), binary
   distributions are downloaded, sha256-verified and extracted to a cache
   directory.
-- Each request gets a fresh ACP session on the agent's pooled process, so
-  different agents can be used in parallel and requests never share
-  state. The OpenAI message history is rendered as a single prompt
-  transcript for context.
+- Each request gets a fresh ACP session on the agent's pooled process,
+  released afterwards with `session/close` when the agent supports it.
+  The OpenAI message history is rendered as a single prompt transcript
+  for context.
 - `agent_message_chunk` updates become assistant message content, streamed
   via SSE or aggregated for non-streaming requests.
 
@@ -83,4 +83,5 @@ first: positional port, flags, environment, defaults.
 - Binary archives are verified against the registry's sha256 when
   present and extracted with path-traversal protection.
 - No token accounting (`usage` is zero), no tool-call surface in the
-  OpenAI response, no session reuse across requests.
+  OpenAI response, no session reuse across requests (sessions are
+  closed after each request when the agent supports `session/close`).

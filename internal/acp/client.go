@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"time"
 
 	sdk "github.com/coder/acp-go-sdk"
 )
@@ -117,6 +118,9 @@ type Process struct {
 	process *exec.Cmd
 	client  *clientImpl
 	cwd     string
+	// closeSupported reports whether the agent advertised session/close
+	// support in its initialize response.
+	closeSupported bool
 
 	closeOnce sync.Once
 }
@@ -174,6 +178,7 @@ func spawn(ctx context.Context, agent Agent) (*Process, error) {
 		return nil, fmt.Errorf("acp: agent speaks protocol version %d, client supports %d",
 			initResp.ProtocolVersion, sdk.ProtocolVersionNumber)
 	}
+	p.closeSupported = initResp.AgentCapabilities.SessionCapabilities.Close != nil
 	return p, nil
 }
 
@@ -216,6 +221,24 @@ type Session struct {
 
 // SessionID returns the ACP session identifier.
 func (s *Session) SessionID() string { return s.sessionID }
+
+// Close releases the session on the agent. It is best-effort: it only
+// sends session/close when the agent advertised support for it, and
+// failures are ignored — the pooled agent process keeps running. The
+// call does not outlive a short timeout, so it never hangs a request.
+func (s *Session) Close() {
+	if !s.proc.closeSupported {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sessionCloseTimeout)
+	defer cancel()
+	_, _ = s.conn.CloseSession(ctx, sdk.CloseSessionRequest{
+		SessionId: sdk.SessionId(s.sessionID),
+	})
+}
+
+// sessionCloseTimeout bounds the best-effort session/close call.
+const sessionCloseTimeout = 10 * time.Second
 
 // Prompt sends the prompt text and blocks until the agent finishes the
 // turn, streaming session updates to onUpdate (which may be nil). It

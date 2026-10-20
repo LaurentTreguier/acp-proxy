@@ -151,6 +151,36 @@ func TestPoolRespawnsAfterCrash(t *testing.T) {
 	}
 }
 
+func TestSessionClose(t *testing.T) {
+	pool, sess := session(t, "plain", "cancel")
+	if got := promptText(t, sess); got != "Hello ACP" {
+		t.Fatalf("first turn content = %q", got)
+	}
+
+	// The mock agent advertises session/close, so Close must talk to it
+	// (a hanging call would hit the timeout).
+	pool.mu.Lock()
+	closeSupported := pool.procs["mock"].closeSupported
+	pool.mu.Unlock()
+	if !closeSupported {
+		t.Fatal("agent did not advertise session/close support")
+	}
+	start := time.Now()
+	sess.Close()
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Close took %v, want a quick acknowledged close", elapsed)
+	}
+
+	// The pooled process keeps serving new sessions afterwards.
+	sess2, err := pool.Session(context.Background(), "mock", mockAgent("plain", "cancel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := promptText(t, sess2); got != "Hello ACP" {
+		t.Errorf("content after close = %q", got)
+	}
+}
+
 func TestPermissionAuto(t *testing.T) {
 	_, sess := session(t, "permission", "auto")
 	if got := promptText(t, sess); got != "Hello ACP" {

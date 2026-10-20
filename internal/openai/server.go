@@ -133,12 +133,13 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// The agent process is pooled: at most one per agent id, spawned
 	// lazily and shared across requests. Each request gets its own ACP
-	// session on it.
+	// session on it, released when the request completes.
 	session, err := s.pool.Session(r.Context(), agentID, agent)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "server_error", err.Error())
 		return
 	}
+	defer session.Close()
 
 	if req.Stream {
 		s.streamCompletion(w, r, session, req, promptText)
