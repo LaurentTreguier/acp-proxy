@@ -71,12 +71,18 @@ func Run() {
 		switch {
 		case msg.Method == "initialize":
 			reply(*msg.ID, map[string]any{
-				"protocolVersion":    1,
-				"agentCapabilities":  map[string]any{},
-				"authMethods":        []any{},
+				"protocolVersion": 1,
+				"agentCapabilities": map[string]any{
+					"sessionCapabilities": map[string]any{
+						"close": map[string]any{},
+					},
+				},
+				"authMethods": []any{},
 			})
 		case msg.Method == "session/new":
 			reply(*msg.ID, map[string]any{"sessionId": "sess-1"})
+		case msg.Method == "session/close":
+			reply(*msg.ID, map[string]any{})
 		case msg.Method == "session/prompt":
 			promptID = *msg.ID
 			switch mode {
