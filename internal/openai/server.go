@@ -1,45 +1,103 @@
 package openai
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"acp-proxy/internal/acp"
-	"acp-proxy/internal/config"
 )
+
+// AgentInfo describes one resolvable ACP agent.
+type AgentInfo struct {
+	ID          string
+	Name        string
+	Version     string
+	Description string
+}
+
+// Resolver turns an agent id into a runnable ACP agent, on demand.
+type Resolver interface {
+	// List returns every known agent.
+	List(ctx context.Context) ([]AgentInfo, error)
+	// Resolve returns the agent to spawn for an id. Agents are spawned
+	// per request, so Resolve must be safe for concurrent use.
+	Resolve(ctx context.Context, id string) (acp.Agent, error)
+}
+
+// UnknownAgentError reports an agent id that the resolver does not know;
+// the API maps it to HTTP 404.
+type UnknownAgentError struct {
+	ID string
+}
+
+func (e *UnknownAgentError) Error() string {
+	return fmt.Sprintf("unknown agent %q, see GET /v1/models", e.ID)
+}
 
 // Server serves the OpenAI-compatible API backed by ACP agents.
 type Server struct {
-	cfg *config.Options
+	resolver Resolver
 }
 
-// New builds a Server from the resolved options.
-func New(cfg *config.Options) *Server {
-	return &Server{cfg: cfg}
+// New builds a Server on top of an agent resolver.
+func New(resolver Resolver) *Server {
+	return &Server{resolver: resolver}
 }
 
-// Register wires the API onto an http.ServeMux.
+// Register wires the API onto an http.ServeMux. Agent selection is
+// per-request through the URL prefix: /{agent}/v1/... The unprefixed
+// /v1/chat/completions selects the agent via the request's model field.
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/models", s.models)
+	mux.HandleFunc("GET /v1/models", s.modelsAll)
+	mux.HandleFunc("GET /{agent}/v1/models", s.modelsOne)
 	mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
+	mux.HandleFunc("POST /{agent}/v1/chat/completions", s.chatCompletions)
 }
 
-func (s *Server) models(w http.ResponseWriter, r *http.Request) {
-	data := make([]map[string]any, 0, len(s.cfg.Agents))
-	for _, a := range s.cfg.Agents {
+func (s *Server) modelsAll(w http.ResponseWriter, r *http.Request) {
+	agents, err := s.resolver.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "server_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": modelList(agents)})
+}
+
+func (s *Server) modelsOne(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("agent")
+	agents, err := s.resolver.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "server_error", err.Error())
+		return
+	}
+	for _, a := range agents {
+		if a.ID == id {
+			writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": modelList([]AgentInfo{a})})
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "invalid_request_error",
+		fmt.Sprintf("unknown agent %q, see GET /v1/models", id))
+}
+
+func modelList(agents []AgentInfo) []map[string]any {
+	data := make([]map[string]any, 0, len(agents))
+	for _, a := range agents {
 		data = append(data, map[string]any{
-			"id":       a.Model,
+			"id":       a.ID,
 			"object":   "model",
 			"created":  0,
 			"owned_by": "acp-proxy",
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+	return data
 }
 
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -48,10 +106,13 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON body: "+err.Error())
 		return
 	}
-	agentCfg, ok := s.cfg.Agent(req.Model)
-	if !ok {
-		writeError(w, http.StatusNotFound, "invalid_request_error",
-			fmt.Sprintf("model %q not found", req.Model))
+	agentID := r.PathValue("agent")
+	if agentID == "" {
+		agentID = req.Model
+	}
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"no agent selected: use the /{agent}/v1/chat/completions path prefix or set the model field")
 		return
 	}
 	if len(req.Messages) == 0 {
@@ -59,14 +120,19 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	agent, err := s.resolver.Resolve(r.Context(), agentID)
+	if err != nil {
+		status := http.StatusBadGateway
+		var unknown *UnknownAgentError
+		if errors.As(err, &unknown) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "server_error", err.Error())
+		return
+	}
+
 	promptText := buildPrompt(req.Messages)
 
-	agent := acp.Agent{
-		Command:     agentCfg.Command,
-		Args:        agentCfg.Args,
-		Dir:         s.cfg.Dir,
-		Permissions: s.cfg.PermissionPolicy(),
-	}
 	session, err := acp.Start(r.Context(), agent)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "server_error", err.Error())

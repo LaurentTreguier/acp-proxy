@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"acp-proxy/internal/config"
+	"acp-proxy/internal/acp"
 	"acp-proxy/internal/mockagent"
 )
 
@@ -24,22 +25,32 @@ func TestMockAgentProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// fakeResolver implements Resolver with a single "mock" agent that
+// re-execs the test binary as the mock ACP agent.
+type fakeResolver struct{}
+
+func (f *fakeResolver) List(ctx context.Context) ([]AgentInfo, error) {
+	return []AgentInfo{{ID: "mock", Name: "Mock", Version: "1.0", Description: "mock agent"}}, nil
+}
+
+func (f *fakeResolver) Resolve(ctx context.Context, id string) (acp.Agent, error) {
+	if id != "mock" {
+		return acp.Agent{}, &UnknownAgentError{ID: id}
+	}
+	return acp.Agent{
+		Command:     os.Args[0],
+		Args:        []string{"-test.run=TestMockAgentProcess"},
+		Permissions: os.Getenv("MOCK_PERMISSIONS"),
+	}, nil
+}
+
 func testServer(t *testing.T, mode, permissions string) *httptest.Server {
 	t.Helper()
 	t.Setenv("ACP_MOCK_AGENT", "1")
 	t.Setenv("ACP_MOCK_MODE", mode)
-	cfg := &config.Options{
-		Host: "127.0.0.1",
-		Port: 0,
-		Agents: []config.Agent{{
-			Model:   "mock",
-			Command: os.Args[0],
-			Args:    []string{"-test.run=TestMockAgentProcess"},
-		}},
-		AutoPermissions: permissions == "auto",
-	}
+	t.Setenv("MOCK_PERMISSIONS", permissions)
 	mux := http.NewServeMux()
-	New(cfg).Register(mux)
+	New(&fakeResolver{}).Register(mux)
 	return httptest.NewServer(mux)
 }
 
@@ -56,6 +67,14 @@ func post(t *testing.T, url string, body any) (*http.Response, string) {
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	return resp, string(raw)
+}
+
+func chatBody(model string, stream bool) map[string]any {
+	return map[string]any{
+		"model":    model,
+		"messages": []map[string]any{{"role": "user", "content": "hello"}},
+		"stream":   stream,
+	}
 }
 
 func TestModels(t *testing.T) {
@@ -79,16 +98,36 @@ func TestModels(t *testing.T) {
 	if body.Object != "list" || len(body.Data) != 1 || body.Data[0].ID != "mock" {
 		t.Errorf("unexpected models response: %+v", body)
 	}
+
+	// Prefixed models endpoint for a single agent.
+	resp2, err := http.Get(srv.URL + "/mock/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Data) != 1 || body.Data[0].ID != "mock" {
+		t.Errorf("unexpected prefixed models response: %+v", body)
+	}
+
+	// Unknown prefix -> 404.
+	resp3, err := http.Get(srv.URL + "/nope/v1/models")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown agent models status = %d, want 404", resp3.StatusCode)
+	}
 }
 
 func TestChatCompletionNonStreaming(t *testing.T) {
 	srv := testServer(t, "plain", "cancel")
 	defer srv.Close()
 
-	resp, body := post(t, srv.URL+"/v1/chat/completions", map[string]any{
-		"model":    "mock",
-		"messages": []map[string]any{{"role": "user", "content": "hello"}},
-	})
+	resp, body := post(t, srv.URL+"/mock/v1/chat/completions", chatBody("mock", false))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -108,15 +147,29 @@ func TestChatCompletionNonStreaming(t *testing.T) {
 	}
 }
 
+func TestChatCompletionUnprefixedModelFallback(t *testing.T) {
+	srv := testServer(t, "plain", "cancel")
+	defer srv.Close()
+
+	// Without a prefix, the model field selects the agent.
+	resp, body := post(t, srv.URL+"/v1/chat/completions", chatBody("mock", false))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var cc ChatCompletionResponse
+	if err := json.Unmarshal([]byte(body), &cc); err != nil {
+		t.Fatal(err)
+	}
+	if cc.Choices[0].Message.Content != "Hello ACP" {
+		t.Errorf("content = %q", cc.Choices[0].Message.Content)
+	}
+}
+
 func TestChatCompletionStreaming(t *testing.T) {
 	srv := testServer(t, "plain", "cancel")
 	defer srv.Close()
 
-	resp, body := post(t, srv.URL+"/v1/chat/completions", map[string]any{
-		"model":    "mock",
-		"messages": []map[string]any{{"role": "user", "content": "hello"}},
-		"stream":   true,
-	})
+	resp, body := post(t, srv.URL+"/mock/v1/chat/completions", chatBody("mock", true))
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
@@ -167,16 +220,18 @@ func TestChatCompletionStreaming(t *testing.T) {
 	}
 }
 
-func TestUnknownModel(t *testing.T) {
+func TestUnknownAgent(t *testing.T) {
 	srv := testServer(t, "plain", "cancel")
 	defer srv.Close()
 
-	resp, body := post(t, srv.URL+"/v1/chat/completions", map[string]any{
-		"model":    "missing",
-		"messages": []map[string]any{{"role": "user", "content": "hello"}},
-	})
+	resp, body := post(t, srv.URL+"/missing/v1/chat/completions", chatBody("missing", false))
 	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("status = %d, want 404, body = %s", resp.StatusCode, body)
+		t.Errorf("prefixed status = %d, want 404, body = %s", resp.StatusCode, body)
+	}
+
+	resp, body = post(t, srv.URL+"/v1/chat/completions", chatBody("missing", false))
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unprefixed status = %d, want 404, body = %s", resp.StatusCode, body)
 	}
 }
 
@@ -184,10 +239,7 @@ func TestPermissionAutoPolicy(t *testing.T) {
 	srv := testServer(t, "permission", "auto")
 	defer srv.Close()
 
-	_, body := post(t, srv.URL+"/v1/chat/completions", map[string]any{
-		"model":    "mock",
-		"messages": []map[string]any{{"role": "user", "content": "hello"}},
-	})
+	_, body := post(t, srv.URL+"/mock/v1/chat/completions", chatBody("mock", false))
 	var cc ChatCompletionResponse
 	if err := json.Unmarshal([]byte(body), &cc); err != nil {
 		t.Fatal(err)
@@ -201,10 +253,7 @@ func TestPermissionCancelPolicy(t *testing.T) {
 	srv := testServer(t, "permission", "cancel")
 	defer srv.Close()
 
-	_, body := post(t, srv.URL+"/v1/chat/completions", map[string]any{
-		"model":    "mock",
-		"messages": []map[string]any{{"role": "user", "content": "hello"}},
-	})
+	_, body := post(t, srv.URL+"/mock/v1/chat/completions", chatBody("mock", false))
 	var cc ChatCompletionResponse
 	if err := json.Unmarshal([]byte(body), &cc); err != nil {
 		t.Fatal(err)
