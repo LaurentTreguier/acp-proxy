@@ -5,3 +5,4 @@
 coverage.*
 .env
 config.local.*
+/acp-proxy
