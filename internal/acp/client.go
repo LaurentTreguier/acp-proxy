@@ -1,6 +1,7 @@
-// Package acp adapts the coder/acp-go-sdk to the needs of the proxy: it
-// spawns an ACP agent process, runs prompt turns and streams session
-// updates to a callback.
+// Package acp adapts the coder/acp-go-sdk to the needs of the proxy. A
+// Pool keeps at most one live process per ACP agent, spawned lazily on
+// first use and kept for the lifetime of the proxy; every request opens
+// a cheap ACP session on the agent's pooled process.
 package acp
 
 import (
@@ -22,16 +23,6 @@ const (
 	StopCancelled = string(sdk.StopReasonCancelled)
 )
 
-// Update kinds surfaced to the proxy.
-const (
-	KindAgentMessage = "agent_message_chunk"
-	KindAgentThought = "agent_thought_chunk"
-	KindToolCall     = "tool_call"
-	KindToolCallUpd  = "tool_call_update"
-	KindPlan         = "plan"
-	KindUserMessage  = "user_message_chunk"
-)
-
 // Agent describes how to spawn an ACP agent.
 type Agent struct {
 	Command     string
@@ -44,38 +35,246 @@ type Agent struct {
 // Update is a decoded session/update notification, pre-filtered to the
 // fields the proxy consumes.
 type Update struct {
-	// Kind is the sessionUpdate discriminator
-	// (agent_message_chunk, agent_thought_chunk, tool_call, ...).
-	Kind string
-	// Text carries the content text for message/thought chunks.
-	Text string
-	// MessageID groups chunks belonging to the same message.
-	MessageID string
-	// ToolCallID identifies tool_call / tool_call_update updates.
+	Kind       string
+	Text       string
+	MessageID  string
 	ToolCallID string
-	// Status is the tool call status for tool_call* updates.
-	Status string
+	Status     string
 }
 
-// Session is a live agent process with one initialized ACP session.
-type Session struct {
-	conn      *sdk.ClientSideConnection
-	process   *exec.Cmd
-	client    *clientImpl
-	sessionID string
+// Pool lazily spawns agent processes and reuses them. At most one
+// process per agent id exists at a time; dead processes are replaced on
+// the next request.
+type Pool struct {
+	mu    sync.Mutex
+	procs map[string]*Process
+}
+
+// NewPool creates an empty pool.
+func NewPool() *Pool {
+	return &Pool{procs: make(map[string]*Process)}
+}
+
+// Session returns a new ACP session on the agent's pooled process,
+// spawning the process on first use. Process lifetime is independent of
+// ctx; only the session handshake uses it.
+func (p *Pool) Session(ctx context.Context, id string, agent Agent) (*Session, error) {
+	proc, err := p.get(ctx, id, agent)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := proc.NewSession(ctx)
+	if err == nil {
+		return sess, nil
+	}
+	// The process may have died between the health check and the
+	// handshake; replace it and retry once.
+	p.mu.Lock()
+	if p.procs[id] == proc {
+		delete(p.procs, id)
+	}
+	p.mu.Unlock()
+	proc.Close()
+	if proc, err = p.get(ctx, id, agent); err != nil {
+		return nil, err
+	}
+	return proc.NewSession(ctx)
+}
+
+// get returns the live process for id, spawning it if needed.
+func (p *Pool) get(ctx context.Context, id string, agent Agent) (*Process, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if proc, ok := p.procs[id]; ok {
+		if !proc.dead() {
+			return proc, nil
+		}
+		proc.Close()
+		delete(p.procs, id)
+	}
+	// The process outlives the request context.
+	proc, err := spawn(context.Background(), agent)
+	if err != nil {
+		return nil, err
+	}
+	p.procs[id] = proc
+	return proc, nil
+}
+
+// Close terminates every pooled process.
+func (p *Pool) Close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id, proc := range p.procs {
+		proc.Close()
+		delete(p.procs, id)
+	}
+}
+
+// Process is one spawned ACP agent with its SDK connection.
+type Process struct {
+	conn    *sdk.ClientSideConnection
+	process *exec.Cmd
+	client  *clientImpl
+	cwd     string
+
 	closeOnce sync.Once
 }
 
-// clientImpl implements sdk.Client: the headless proxy answers permission
-// requests according to the configured policy and rejects fs/terminal
-// requests.
+// spawn starts the agent process and performs the initialize handshake.
+func spawn(ctx context.Context, agent Agent) (*Process, error) {
+	cwd := agent.Dir
+	if cwd == "" {
+		cwd = "."
+	}
+
+	cmd := exec.CommandContext(ctx, agent.Command, agent.Args...)
+	cmd.Dir = cwd
+	if len(agent.Env) > 0 {
+		cmd.Env = append(cmd.Environ(), agent.Env...)
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("acp: agent stdin: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("acp: agent stdout: %w", err)
+	}
+	// Drain stderr so a chatty agent cannot block on a full pipe.
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("acp: agent stderr: %w", err)
+	}
+
+	p := &Process{
+		client: &clientImpl{
+			permissions: agent.Permissions,
+			handlers:    make(map[string]func(Update)),
+		},
+		cwd: cwd,
+	}
+	p.conn = sdk.NewClientSideConnection(p.client, stdin, stdout)
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("acp: start agent %s: %w", agent.Command, err)
+	}
+	p.process = cmd
+	go io.Copy(io.Discard, stderr)
+
+	initResp, err := p.conn.Initialize(ctx, sdk.InitializeRequest{
+		ProtocolVersion: sdk.ProtocolVersionNumber,
+		ClientInfo:      &ClientInfo,
+	})
+	if err != nil {
+		p.Close()
+		return nil, fmt.Errorf("acp: initialize: %w", err)
+	}
+	if initResp.ProtocolVersion != sdk.ProtocolVersionNumber {
+		p.Close()
+		return nil, fmt.Errorf("acp: agent speaks protocol version %d, client supports %d",
+			initResp.ProtocolVersion, sdk.ProtocolVersionNumber)
+	}
+	return p, nil
+}
+
+// NewSession opens a fresh ACP session on the process.
+func (p *Process) NewSession(ctx context.Context) (*Session, error) {
+	resp, err := p.conn.NewSession(ctx, sdk.NewSessionRequest{Cwd: p.cwd})
+	if err != nil {
+		return nil, fmt.Errorf("acp: session/new: %w", err)
+	}
+	return &Session{proc: p, conn: p.conn, sessionID: string(resp.SessionId)}, nil
+}
+
+// dead reports whether the agent process has disconnected.
+func (p *Process) dead() bool {
+	select {
+	case <-p.conn.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// Close terminates the agent process.
+func (p *Process) Close() {
+	p.closeOnce.Do(func() {
+		if p.process != nil && p.process.Process != nil {
+			_ = p.process.Process.Kill()
+			go func() { _ = p.process.Wait() }()
+		}
+	})
+}
+
+// Session is one ACP conversation on a pooled agent process. Sessions
+// are cheap; the underlying process is shared and pooled.
+type Session struct {
+	proc      *Process
+	conn      *sdk.ClientSideConnection
+	sessionID string
+}
+
+// SessionID returns the ACP session identifier.
+func (s *Session) SessionID() string { return s.sessionID }
+
+// Prompt sends the prompt text and blocks until the agent finishes the
+// turn, streaming session updates to onUpdate (which may be nil). It
+// returns the stop reason. Updates are routed to this session only.
+//
+// When ctx is cancelled, the SDK sends session/cancel and Prompt returns
+// StopCancelled.
+func (s *Session) Prompt(ctx context.Context, promptText string, onUpdate func(Update)) (string, error) {
+	s.proc.client.setHandler(s.sessionID, onUpdate)
+	defer s.proc.client.removeHandler(s.sessionID)
+
+	resp, err := s.conn.Prompt(ctx, sdk.PromptRequest{
+		SessionId: sdk.SessionId(s.sessionID),
+		Prompt:    []sdk.ContentBlock{sdk.TextBlock(promptText)},
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return StopCancelled, nil
+		}
+		return "", fmt.Errorf("acp: session/prompt: %w", err)
+	}
+	return string(resp.StopReason), nil
+}
+
+// clientImpl implements sdk.Client for a process: the headless proxy
+// answers permission requests according to the configured policy,
+// rejects fs/terminal requests and routes session updates to the
+// session that subscribed to them.
 type clientImpl struct {
-	mu          sync.Mutex
 	permissions string
-	onUpdate    func(Update)
+	mu          sync.Mutex
+	handlers    map[string]func(Update)
 }
 
 var _ sdk.Client = (*clientImpl)(nil)
+
+func (c *clientImpl) setHandler(sessionID string, fn func(Update)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if fn != nil {
+		c.handlers[sessionID] = fn
+	}
+}
+
+func (c *clientImpl) removeHandler(sessionID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.handlers, sessionID)
+}
+
+func (c *clientImpl) SessionUpdate(ctx context.Context, params sdk.SessionNotification) error {
+	c.mu.Lock()
+	fn := c.handlers[string(params.SessionId)]
+	c.mu.Unlock()
+	if fn != nil {
+		fn(decodeUpdate(params))
+	}
+	return nil
+}
 
 func (c *clientImpl) RequestPermission(ctx context.Context, params sdk.RequestPermissionRequest) (sdk.RequestPermissionResponse, error) {
 	if c.permissions == "auto" {
@@ -104,16 +303,6 @@ func selected(optionID sdk.PermissionOptionId) sdk.RequestPermissionResponse {
 	}
 }
 
-func (c *clientImpl) SessionUpdate(ctx context.Context, params sdk.SessionNotification) error {
-	c.mu.Lock()
-	onUpdate := c.onUpdate
-	c.mu.Unlock()
-	if onUpdate != nil {
-		onUpdate(decodeUpdate(params))
-	}
-	return nil
-}
-
 func (c *clientImpl) ReadTextFile(ctx context.Context, params sdk.ReadTextFileRequest) (sdk.ReadTextFileResponse, error) {
 	return sdk.ReadTextFileResponse{}, sdk.NewMethodNotFound("fs/read_text_file")
 }
@@ -140,142 +329,4 @@ func (c *clientImpl) ReleaseTerminal(ctx context.Context, params sdk.ReleaseTerm
 
 func (c *clientImpl) WaitForTerminalExit(ctx context.Context, params sdk.WaitForTerminalExitRequest) (sdk.WaitForTerminalExitResponse, error) {
 	return sdk.WaitForTerminalExitResponse{}, sdk.NewMethodNotFound("terminal/wait_for_exit")
-}
-
-// decodeUpdate flattens an SDK session notification into an Update.
-func decodeUpdate(n sdk.SessionNotification) Update {
-	u := n.Update
-	switch {
-	case u.AgentMessageChunk != nil:
-		return chunkUpdate(KindAgentMessage, u.AgentMessageChunk.Content, u.AgentMessageChunk.MessageId)
-	case u.AgentThoughtChunk != nil:
-		return chunkUpdate(KindAgentThought, u.AgentThoughtChunk.Content, u.AgentThoughtChunk.MessageId)
-	case u.UserMessageChunk != nil:
-		return chunkUpdate(KindUserMessage, u.UserMessageChunk.Content, u.UserMessageChunk.MessageId)
-	case u.ToolCall != nil:
-		return Update{
-			Kind:      KindToolCall,
-			ToolCallID: string(u.ToolCall.ToolCallId),
-			Status:    string(u.ToolCall.Status),
-		}
-	case u.ToolCallUpdate != nil:
-		upd := Update{
-			Kind:      KindToolCallUpd,
-			ToolCallID: string(u.ToolCallUpdate.ToolCallId),
-		}
-		if u.ToolCallUpdate.Status != nil {
-			upd.Status = string(*u.ToolCallUpdate.Status)
-		}
-		return upd
-	case u.Plan != nil:
-		return Update{Kind: KindPlan}
-	default:
-		return Update{}
-	}
-}
-
-func chunkUpdate(kind string, content sdk.ContentBlock, messageID *string) Update {
-	upd := Update{Kind: kind}
-	if content.Text != nil {
-		upd.Text = content.Text.Text
-	}
-	if messageID != nil {
-		upd.MessageID = *messageID
-	}
-	return upd
-}
-
-// Start spawns the agent, performs the initialize handshake and creates a
-// new session. The returned Session owns the process; call Close when done.
-func Start(ctx context.Context, agent Agent) (*Session, error) {
-	cwd := agent.Dir
-	if cwd == "" {
-		cwd = "."
-	}
-
-	cmd := exec.CommandContext(ctx, agent.Command, agent.Args...)
-	cmd.Dir = cwd
-	if len(agent.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), agent.Env...)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("acp: agent stdin: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("acp: agent stdout: %w", err)
-	}
-	// Drain stderr so a chatty agent cannot block on a full pipe.
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("acp: agent stderr: %w", err)
-	}
-
-	s := &Session{client: &clientImpl{permissions: agent.Permissions}}
-	s.conn = sdk.NewClientSideConnection(s.client, stdin, stdout)
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("acp: start agent %s: %w", agent.Command, err)
-	}
-	s.process = cmd
-	go io.Copy(io.Discard, stderr)
-
-	initResp, err := s.conn.Initialize(ctx, sdk.InitializeRequest{
-		ProtocolVersion: sdk.ProtocolVersionNumber,
-		ClientInfo:      &ClientInfo,
-	})
-	if err != nil {
-		s.Close()
-		return nil, fmt.Errorf("acp: initialize: %w", err)
-	}
-	if initResp.ProtocolVersion != sdk.ProtocolVersionNumber {
-		s.Close()
-		return nil, fmt.Errorf("acp: agent speaks protocol version %d, client supports %d",
-			initResp.ProtocolVersion, sdk.ProtocolVersionNumber)
-	}
-
-	newResp, err := s.conn.NewSession(ctx, sdk.NewSessionRequest{Cwd: cwd})
-	if err != nil {
-		s.Close()
-		return nil, fmt.Errorf("acp: session/new: %w", err)
-	}
-	s.sessionID = string(newResp.SessionId)
-	return s, nil
-}
-
-// SessionID returns the ACP session identifier.
-func (s *Session) SessionID() string { return s.sessionID }
-
-// Prompt sends the prompt text and blocks until the agent finishes the
-// turn, streaming session updates to onUpdate (which may be nil). It
-// returns the stop reason.
-//
-// When ctx is cancelled, the SDK sends session/cancel and Prompt returns
-// StopCancelled.
-func (s *Session) Prompt(ctx context.Context, promptText string, onUpdate func(Update)) (string, error) {
-	s.client.mu.Lock()
-	s.client.onUpdate = onUpdate
-	s.client.mu.Unlock()
-
-	resp, err := s.conn.Prompt(ctx, sdk.PromptRequest{
-		SessionId: sdk.SessionId(s.sessionID),
-		Prompt:    []sdk.ContentBlock{sdk.TextBlock(promptText)},
-	})
-	if err != nil {
-		if ctx.Err() != nil {
-			return StopCancelled, nil
-		}
-		return "", fmt.Errorf("acp: session/prompt: %w", err)
-	}
-	return string(resp.StopReason), nil
-}
-
-// Close tears down the agent process.
-func (s *Session) Close() {
-	s.closeOnce.Do(func() {
-		if s.process != nil && s.process.Process != nil {
-			_ = s.process.Process.Kill()
-			go func() { _ = s.process.Wait() }()
-		}
-	})
 }

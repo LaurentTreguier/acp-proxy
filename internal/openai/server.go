@@ -44,21 +44,27 @@ func (e *UnknownAgentError) Error() string {
 // Server serves the OpenAI-compatible API backed by ACP agents.
 type Server struct {
 	resolver Resolver
+	pool     *acp.Pool
 }
 
-// New builds a Server on top of an agent resolver.
-func New(resolver Resolver) *Server {
-	return &Server{resolver: resolver}
+// New builds a Server on top of an agent resolver and an agent process
+// pool.
+func New(resolver Resolver, pool *acp.Pool) *Server {
+	return &Server{resolver: resolver, pool: pool}
 }
 
-// Register wires the API onto an http.ServeMux. Agent selection is
-// per-request through the URL prefix: /{agent}/v1/... The unprefixed
-// /v1/chat/completions selects the agent via the request's model field.
+// Register wires the API onto an http.ServeMux. Every request is scoped
+// to one agent through the URL prefix: /{agent}/v1/...
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/models", s.modelsAll)
 	mux.HandleFunc("GET /{agent}/v1/models", s.modelsOne)
-	mux.HandleFunc("POST /v1/chat/completions", s.chatCompletions)
+	mux.HandleFunc("POST /v1/chat/completions", s.unprefixed)
 	mux.HandleFunc("POST /{agent}/v1/chat/completions", s.chatCompletions)
+}
+
+func (s *Server) unprefixed(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotFound, "invalid_request_error",
+		"no agent selected: use the /{agent}/v1/chat/completions path prefix")
 }
 
 func (s *Server) modelsAll(w http.ResponseWriter, r *http.Request) {
@@ -107,14 +113,6 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := r.PathValue("agent")
-	if agentID == "" {
-		agentID = req.Model
-	}
-	if agentID == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request_error",
-			"no agent selected: use the /{agent}/v1/chat/completions path prefix or set the model field")
-		return
-	}
 	if len(req.Messages) == 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "messages is required")
 		return
@@ -133,12 +131,14 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	promptText := buildPrompt(req.Messages)
 
-	session, err := acp.Start(r.Context(), agent)
+	// The agent process is pooled: at most one per agent id, spawned
+	// lazily and shared across requests. Each request gets its own ACP
+	// session on it.
+	session, err := s.pool.Session(r.Context(), agentID, agent)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "server_error", err.Error())
 		return
 	}
-	defer session.Close()
 
 	if req.Stream {
 		s.streamCompletion(w, r, session, req, promptText)
