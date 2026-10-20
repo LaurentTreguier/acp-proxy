@@ -31,7 +31,8 @@ type Agent struct {
 type Options struct {
 	Host string
 	Port int
-	// Agents lists the ACP agents exposed as models.
+	// Agents lists statically defined ACP agents, by id. They take
+	// precedence over registry entries with the same id.
 	Agents []Agent
 	// Dir is the working directory for agent processes and ACP sessions
 	// ("" means the current directory).
@@ -40,6 +41,11 @@ type Options struct {
 	// the first allow_* option). When false, permission requests are
 	// answered "cancelled".
 	AutoPermissions bool
+	// RegistryURL is the ACP registry index URL.
+	RegistryURL string
+	// CacheDir is where downloaded agent binaries are stored
+	// ("" means the user cache directory).
+	CacheDir string
 }
 
 // Parse resolves options from flags, environment variables and one
@@ -87,6 +93,10 @@ func Parse(args []string, getenv func(string) string) (*Options, error) {
 	fs.StringVar(&opts.Dir, "dir", getenv(envPrefix+"DIR"), "working `directory` for agent sessions")
 	fs.BoolVar(&opts.AutoPermissions, "auto", parseBoolEnv(getenv(envPrefix+"AUTO")),
 		"auto-approve agent permission requests")
+	fs.StringVar(&opts.RegistryURL, "registry", getenv(envPrefix+"REGISTRY"),
+		"`URL` of the ACP registry index (default: the official ACP registry)")
+	fs.StringVar(&opts.CacheDir, "cache-dir", getenv(envPrefix+"CACHE_DIR"),
+		"`directory` for downloaded agent binaries (default: the user cache directory)")
 
 	// The standard flag package stops at the first non-flag argument, so
 	// loop to allow the positional port anywhere: "acp-proxy 8080 -auto"
@@ -195,17 +205,25 @@ highest first: positional port, flags, environment, defaults.
 `, envPrefix)
 	fs.PrintDefaults()
 	fmt.Fprintf(fs.Output(), `
+Agents are resolved on demand from the ACP registry
+(https://agentclientprotocol.com) by id, via the URL prefix:
+/{agent}/v1/chat/completions. Agents are downloaded automatically on
+first use. Statically declared agents (see -agent) override registry
+entries with the same id.
+
 Examples:
   acp-proxy
   acp-proxy 8080
+  curl http://127.0.0.1:8080/claude-acp/v1/chat/completions ...
   acp-proxy -agent "claude-code=npx -y @zed-industries/claude-code-acp"
-  ACP_PROXY_AGENTS="claude-code=npx -y @zed-industries/claude-code-acp" acp-proxy
 
 Environment:
-  ACP_PROXY_PORT      listen port (default 8080)
-  ACP_PROXY_HOST      listen host (default 127.0.0.1)
-  ACP_PROXY_AGENTS    agent specs separated by ";"
-  ACP_PROXY_DIR       working directory for agent sessions
-  ACP_PROXY_AUTO      auto-approve permission requests ("1"/"true"/"yes"/"on")
+  ACP_PROXY_PORT       listen port (default 8080)
+  ACP_PROXY_HOST       listen host (default 127.0.0.1)
+  ACP_PROXY_AGENTS     static agent specs separated by ";"
+  ACP_PROXY_DIR        working directory for agent sessions
+  ACP_PROXY_AUTO       auto-approve permission requests ("1"/"true"/"yes"/"on")
+  ACP_PROXY_REGISTRY   ACP registry index URL
+  ACP_PROXY_CACHE_DIR  directory for downloaded agent binaries
 `)
 }

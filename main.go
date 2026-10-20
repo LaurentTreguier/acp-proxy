@@ -1,7 +1,9 @@
 // acp-proxy is a web server exposing an OpenAI-compatible API that routes
 // requests to ACP (Agent Client Protocol) agents. Zero-config: running it
-// with no arguments starts a server on 127.0.0.1:8080; every option is
-// available as a flag and as an ACP_PROXY_* environment variable.
+// with no arguments starts a server on 127.0.0.1:8080; agents are resolved
+// on demand from the ACP registry by id, via the /{agent}/v1/... URL
+// prefix. Every option is available as a flag and as an ACP_PROXY_*
+// environment variable.
 package main
 
 import (
@@ -11,11 +13,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"time"
 
+	"acp-proxy/internal/acp"
 	"acp-proxy/internal/config"
 	"acp-proxy/internal/openai"
+	"acp-proxy/internal/registry"
 )
 
 func main() {
@@ -24,21 +28,39 @@ func main() {
 		log.Fatalf("acp-proxy: %v", err)
 	}
 
-	models := make([]string, 0, len(opts.Agents))
+	static := make(map[string]acp.Agent, len(opts.Agents))
 	for _, a := range opts.Agents {
-		models = append(models, a.Model)
+		static[a.Model] = acp.Agent{
+			Command:     a.Command,
+			Args:        a.Args,
+			Dir:         opts.Dir,
+			Permissions: opts.PermissionPolicy(),
+		}
 	}
-	if len(models) == 0 {
-		log.Printf("acp-proxy: no agents configured; configure one with -agent \"[name=]command [args...]\" or %sAGENTS", "ACP_PROXY_")
-	} else {
-		log.Printf("acp-proxy: models: %s", strings.Join(models, ", "))
-	}
+	resolver := registry.New(opts.RegistryURL, opts.CacheDir, opts.Dir, opts.PermissionPolicy(), static)
+
+	// Fetch the registry at startup; failures are non-fatal, unknown ids
+	// trigger a refetch on demand.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := resolver.Warmup(ctx); err != nil {
+			log.Printf("acp-proxy: registry unavailable: %v (will retry on demand)", err)
+			return
+		}
+		agents, err := resolver.List(ctx)
+		if err != nil {
+			return
+		}
+		log.Printf("acp-proxy: registry: %d agent(s) available", len(agents))
+	}()
+
 	if opts.AutoPermissions {
 		log.Print("acp-proxy: permission requests are auto-approved (-auto)")
 	}
 
 	mux := http.NewServeMux()
-	openai.New(opts).Register(mux)
+	openai.New(resolver).Register(mux)
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 	server := &http.Server{Addr: addr, Handler: mux}
 
