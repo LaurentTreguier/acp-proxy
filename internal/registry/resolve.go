@@ -10,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
 	"acp-proxy/internal/acp"
-	"acp-proxy/internal/openai"
 )
 
 // Client resolves agent ids to runnable agent commands. It merges static
@@ -75,9 +75,8 @@ func (c *Client) Warmup(ctx context.Context) error {
 }
 
 // List returns every known agent: static definitions plus registry
-// entries. Registry entries are included even before a successful fetch
-// has happened (the list is then just the static agents).
-func (c *Client) List(ctx context.Context) ([]openai.AgentInfo, error) {
+// entries, sorted by id. The registry is fetched on first use.
+func (c *Client) List(ctx context.Context) ([]acp.AgentInfo, error) {
 	byID, fetched := c.cache.snapshot()
 	if !fetched {
 		if err := c.Warmup(ctx); err != nil {
@@ -86,9 +85,9 @@ func (c *Client) List(ctx context.Context) ([]openai.AgentInfo, error) {
 		byID, _ = c.cache.snapshot()
 	}
 	seen := make(map[string]bool, len(byID))
-	var out []openai.AgentInfo
+	var out []acp.AgentInfo
 	for _, e := range byID {
-		out = append(out, openai.AgentInfo{
+		out = append(out, acp.AgentInfo{
 			ID:          e.ID,
 			Name:        e.Name,
 			Version:     e.Version,
@@ -98,25 +97,19 @@ func (c *Client) List(ctx context.Context) ([]openai.AgentInfo, error) {
 	}
 	for id := range c.static {
 		if !seen[id] {
-			out = append(out, openai.AgentInfo{ID: id, Name: id})
+			out = append(out, acp.AgentInfo{ID: id, Name: id})
 		}
 	}
 	// Deterministic order for clients and tests.
-	sortInfos(out)
+	slices.SortFunc(out, func(a, b acp.AgentInfo) int {
+		return strings.Compare(a.ID, b.ID)
+	})
 	return out, nil
 }
 
-func sortInfos(infos []openai.AgentInfo) {
-	for i := 1; i < len(infos); i++ {
-		for j := i; j > 0 && infos[j].ID < infos[j-1].ID; j-- {
-			infos[j], infos[j-1] = infos[j-1], infos[j]
-		}
-	}
-}
-
 // Resolve returns the runnable agent for an id. Static agents win over
-// registry entries; a missing registry hit triggers one refetch before
-// giving up.
+// registry entries; the registry is fetched on first use, and an id
+// still missing after that is reported unknown.
 func (c *Client) Resolve(ctx context.Context, id string) (acp.Agent, error) {
 	if a, ok := c.static[id]; ok {
 		return a, nil
@@ -131,7 +124,7 @@ func (c *Client) Resolve(ctx context.Context, id string) (acp.Agent, error) {
 		}
 	}
 	if !ok {
-		return acp.Agent{}, &openai.UnknownAgentError{ID: id}
+		return acp.Agent{}, &acp.UnknownAgentError{ID: id}
 	}
 
 	switch {

@@ -14,7 +14,6 @@ import (
 
 	"acp-proxy/internal/acp"
 	"acp-proxy/internal/mockagent"
-	"acp-proxy/internal/openai"
 )
 
 // TestMockAgentProcess is re-entered via exec: when ACP_MOCK_AGENT=1 the
@@ -29,13 +28,13 @@ func TestMockAgentProcess(t *testing.T) {
 
 type fakeResolver struct{}
 
-func (f *fakeResolver) List(ctx context.Context) ([]openai.AgentInfo, error) {
-	return []openai.AgentInfo{{ID: "mock", Name: "Mock"}}, nil
+func (f *fakeResolver) List(ctx context.Context) ([]acp.AgentInfo, error) {
+	return []acp.AgentInfo{{ID: "mock", Name: "Mock"}}, nil
 }
 
 func (f *fakeResolver) Resolve(ctx context.Context, id string) (acp.Agent, error) {
 	if id != "mock" {
-		return acp.Agent{}, &openai.UnknownAgentError{ID: id}
+		return acp.Agent{}, &acp.UnknownAgentError{ID: id}
 	}
 	return acp.Agent{
 		Command:     os.Args[0],
@@ -195,9 +194,9 @@ func TestMessagesStreaming(t *testing.T) {
 			Type  string `json:"type"`
 			Index int    `json:"index"`
 			Delta struct {
-				Type      string `json:"type"`
-				Text      string `json:"text"`
-				Thinking  string `json:"thinking"`
+				Type       string `json:"type"`
+				Text       string `json:"text"`
+				Thinking   string `json:"thinking"`
 				StopReason string `json:"stop_reason"`
 			} `json:"delta"`
 		}

@@ -37,7 +37,7 @@ type Entry struct {
 
 // Distribution describes how to obtain and run the agent.
 type Distribution struct {
-	Npx    *NpxDist              `json:"npx,omitempty"`
+	Npx    *NpxDist               `json:"npx,omitempty"`
 	Binary map[string]*BinaryDist `json:"binary,omitempty"`
 }
 
@@ -45,7 +45,7 @@ type Distribution struct {
 // first use.
 type NpxDist struct {
 	Package string            `json:"package"`
-	Args    []string           `json:"args,omitempty"`
+	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 }
 
@@ -83,8 +83,8 @@ func fetchIndex(ctx context.Context, url string) (*Index, error) {
 
 // cache holds the last successfully fetched index.
 type cache struct {
-	mu     sync.RWMutex
-	byID   map[string]Entry
+	mu      sync.RWMutex
+	byID    map[string]Entry
 	fetched bool
 }
 

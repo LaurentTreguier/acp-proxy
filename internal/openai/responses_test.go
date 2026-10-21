@@ -222,10 +222,10 @@ func TestResponsesStreaming(t *testing.T) {
 			continue
 		}
 		var ev struct {
-			Type   string         `json:"type"`
-			Delta  string         `json:"delta"`
-			Text   string         `json:"text"`
-			Item   *outputItem    `json:"item"`
+			Type     string             `json:"type"`
+			Delta    string             `json:"delta"`
+			Text     string             `json:"text"`
+			Item     *outputItem        `json:"item"`
 			Response *responsesResponse `json:"response"`
 		}
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {

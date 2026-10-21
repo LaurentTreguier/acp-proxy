@@ -1,7 +1,9 @@
-// Package acp adapts the coder/acp-go-sdk to the needs of the proxy. A
-// Pool keeps at most one live process per ACP agent, spawned lazily on
-// first use and kept for the lifetime of the proxy; every request opens
-// a cheap ACP session on the agent's pooled process.
+// Package acp is the proxy's agent domain. A Pool keeps at most one live
+// process per ACP agent, spawned lazily on first use and kept for the
+// lifetime of the proxy; every request opens a cheap ACP session on the
+// agent's pooled process. The package also defines the agent-domain
+// contract shared by the API packages and the registry: AgentInfo,
+// Resolver and UnknownAgentError.
 package acp
 
 import (
@@ -26,16 +28,24 @@ const (
 	StopCancelled = string(sdk.StopReasonCancelled)
 )
 
+// sessionCloseTimeout bounds the best-effort session/close call.
+const sessionCloseTimeout = 10 * time.Second
+
 // Agent describes how to spawn an ACP agent.
 type Agent struct {
 	// ID identifies the agent in logs and pool bookkeeping.
 	ID string
 	// Command is the executable to spawn as the ACP agent.
-	Command     string
-	Args        []string
-	Dir         string   // working directory; "" means the server's cwd
-	Env         []string // extra KEY=VALUE entries layered over the inherited environment
-	Permissions string   // "cancel" (default) or "auto"; see package config
+	Command string
+	// Args are the command-line arguments passed to the agent.
+	Args []string
+	// Dir is the working directory; "" means the server's cwd.
+	Dir string
+	// Env lists extra KEY=VALUE entries layered over the inherited
+	// environment.
+	Env []string
+	// Permissions is "cancel" (default) or "auto"; see package config.
+	Permissions string
 }
 
 // Update is a decoded session/update notification, pre-filtered to the
@@ -264,9 +274,6 @@ func (s *Session) Close() {
 		SessionId: sdk.SessionId(s.sessionID),
 	})
 }
-
-// sessionCloseTimeout bounds the best-effort session/close call.
-const sessionCloseTimeout = 10 * time.Second
 
 // Prompt sends the prompt text and blocks until the agent finishes the
 // turn, streaming session updates to onUpdate (which may be nil). It

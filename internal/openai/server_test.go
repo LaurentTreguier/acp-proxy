@@ -29,13 +29,13 @@ func TestMockAgentProcess(t *testing.T) {
 // re-execs the test binary as the mock ACP agent.
 type fakeResolver struct{}
 
-func (f *fakeResolver) List(ctx context.Context) ([]AgentInfo, error) {
-	return []AgentInfo{{ID: "mock", Name: "Mock", Version: "1.0", Description: "mock agent"}}, nil
+func (f *fakeResolver) List(ctx context.Context) ([]acp.AgentInfo, error) {
+	return []acp.AgentInfo{{ID: "mock", Name: "Mock", Version: "1.0", Description: "mock agent"}}, nil
 }
 
 func (f *fakeResolver) Resolve(ctx context.Context, id string) (acp.Agent, error) {
 	if id != "mock" {
-		return acp.Agent{}, &UnknownAgentError{ID: id}
+		return acp.Agent{}, &acp.UnknownAgentError{ID: id}
 	}
 	return acp.Agent{
 		Command:     os.Args[0],

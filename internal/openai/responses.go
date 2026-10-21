@@ -56,14 +56,14 @@ type responsesResponse struct {
 	Object            string             `json:"object"`
 	CreatedAt         int64              `json:"created_at"`
 	Status            string             `json:"status"`
-	Error            any                `json:"error"`
+	Error             any                `json:"error"`
 	IncompleteDetails *incompleteDetails `json:"incomplete_details"`
-	Instructions     any                `json:"instructions"`
-	MaxOutputTokens  any                `json:"max_output_tokens"`
-	Model            string             `json:"model"`
-	Output           []outputItem       `json:"output"`
-	OutputText       string             `json:"output_text"`
-	Usage            responsesUsage     `json:"usage"`
+	Instructions      any                `json:"instructions"`
+	MaxOutputTokens   any                `json:"max_output_tokens"`
+	Model             string             `json:"model"`
+	Output            []outputItem       `json:"output"`
+	OutputText        string             `json:"output_text"`
+	Usage             responsesUsage     `json:"usage"`
 }
 
 // turn is one conversation entry in a stored transcript.
@@ -398,7 +398,7 @@ func (s *Server) getResponse(w http.ResponseWriter, r *http.Request) {
 
 func newResponsesResponse(req responsesRequest) responsesResponse {
 	return responsesResponse{
-		ID:           "resp_" + RandomID(),
+		ID:           "resp_" + acp.RandomID(),
 		Object:       "response",
 		CreatedAt:    time.Now().Unix(),
 		Status:       "completed",
@@ -411,7 +411,7 @@ func newResponsesResponse(req responsesRequest) responsesResponse {
 func newOutputMessage() outputItem {
 	return outputItem{
 		Type:   "message",
-		ID:     "msg_" + RandomID(),
+		ID:     "msg_" + acp.RandomID(),
 		Role:   "assistant",
 		Status: "completed",
 	}

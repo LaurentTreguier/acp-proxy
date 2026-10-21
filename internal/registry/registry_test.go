@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"acp-proxy/internal/acp"
-	"acp-proxy/internal/openai"
 )
 
 func TestParseIndex(t *testing.T) {
@@ -77,7 +76,7 @@ func newRegistryServer(t *testing.T, archive []byte) (*httptest.Server, *Entry) 
 				ID: "npx-agent", Name: "Npx Agent", Version: "1.0.0",
 				Distribution: Distribution{Npx: &NpxDist{
 					Package: "some-acp@1.0.0", Args: []string{"--acp"},
-					Env:     map[string]string{"FOO": "bar"},
+					Env: map[string]string{"FOO": "bar"},
 				}},
 			},
 			{
@@ -223,7 +222,7 @@ func TestResolveUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := c.Resolve(context.Background(), "nope")
-	var unknown *openai.UnknownAgentError
+	var unknown *acp.UnknownAgentError
 	if !errors.As(err, &unknown) || unknown.ID != "nope" {
 		t.Errorf("expected UnknownAgentError, got %v", err)
 	}
