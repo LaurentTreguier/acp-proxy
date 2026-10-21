@@ -16,8 +16,8 @@ func TestParseDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.Host != "127.0.0.1" || opts.Port != 8080 {
-		t.Errorf("default addr = %s:%d, want 127.0.0.1:8080", opts.Host, opts.Port)
+	if opts.Host != "127.0.0.1" || opts.Port != DefaultPort {
+		t.Errorf("default addr = %s:%d, want 127.0.0.1:%d", opts.Host, opts.Port, DefaultPort)
 	}
 	if len(opts.Agents) != 0 {
 		t.Errorf("agents = %+v, want none", opts.Agents)

@@ -28,12 +28,12 @@ Protocol) server via a built-in ACP client, backed by
 
 ```sh
 go build -o acp-proxy .
-./acp-proxy                 # 127.0.0.1:8080, agents on demand
+./acp-proxy                 # 127.0.0.1:11734, agents on demand
 ./acp-proxy 8080            # positional port
 
-curl http://127.0.0.1:8080/v1/models            # every registry agent
-curl http://127.0.0.1:8080/claude-acp/v1/models # one agent
-curl http://127.0.0.1:8080/claude-acp/v1/chat/completions \
+curl http://127.0.0.1:11734/v1/models            # every registry agent
+curl http://127.0.0.1:11734/claude-acp/v1/models # one agent
+curl http://127.0.0.1:11734/claude-acp/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"claude-acp","messages":[{"role":"user","content":"hello"}]}'
 ```
@@ -65,7 +65,7 @@ first: positional port, flags, environment, defaults.
 | Flag | Environment | Default | Meaning |
 |---|---|---|---|
 | (positional) | — | — | listen port |
-| `-port` | `ACP_PROXY_PORT` | `8080` | listen port |
+| `-port` | `ACP_PROXY_PORT` | `11734` | listen port |
 | `-host` | `ACP_PROXY_HOST` | `127.0.0.1` | listen host |
 | `-registry` | `ACP_PROXY_REGISTRY` | official ACP registry | registry index URL |
 | `-cache-dir` | `ACP_PROXY_CACHE_DIR` | user cache dir | where downloaded agents live |
