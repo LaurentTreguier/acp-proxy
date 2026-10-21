@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"acp-proxy/internal/acp"
@@ -54,11 +53,6 @@ func testServer(t *testing.T, mode string) *httptest.Server {
 	New(&fakeResolver{}, pool).Register(mux)
 	return httptest.NewServer(mux)
 }
-
-var (
-	envMu   sync.Mutex
-	agentID = "msg_body_agent"
-)
 
 func post(t *testing.T, url string, body any) (*http.Response, string) {
 	t.Helper()

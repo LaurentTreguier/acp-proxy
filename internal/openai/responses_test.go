@@ -11,13 +11,8 @@ import (
 	"acp-proxy/internal/acp"
 )
 
-func responsesServer(t *testing.T, mode string) *testHarness {
-	t.Helper()
-	return newTestHarness(t, mode)
-}
-
 func TestResponsesNonStreaming(t *testing.T) {
-	h := responsesServer(t, "plain")
+	h := newTestHarness(t, "plain")
 	defer h.Close()
 
 	resp, body := h.post(t, "/mock/v1/responses", map[string]any{
@@ -88,7 +83,7 @@ func TestResponsesNonStreaming(t *testing.T) {
 }
 
 func TestResponsesPreviousUnknown(t *testing.T) {
-	h := responsesServer(t, "plain")
+	h := newTestHarness(t, "plain")
 	defer h.Close()
 
 	resp, body := h.post(t, "/mock/v1/responses", map[string]any{
@@ -160,10 +155,6 @@ func TestResponsesSurvivesRestart(t *testing.T) {
 	if !ok {
 		t.Fatal("second response must be stored")
 	}
-	var wantRoles []string
-	for _, tr := range stored.Transcript {
-		wantRoles = append(wantRoles, tr.Role)
-	}
 	if len(stored.Transcript) < 4 {
 		t.Fatalf("transcript = %+v, want system + user + assistant + new user + new assistant", stored.Transcript)
 	}
@@ -176,7 +167,7 @@ func TestResponsesSurvivesRestart(t *testing.T) {
 }
 
 func TestResponsesStoreFalse(t *testing.T) {
-	h := responsesServer(t, "plain")
+	h := newTestHarness(t, "plain")
 	defer h.Close()
 
 	resp, body := h.post(t, "/mock/v1/responses", map[string]any{
@@ -196,7 +187,7 @@ func TestResponsesStoreFalse(t *testing.T) {
 }
 
 func TestResponsesStreaming(t *testing.T) {
-	h := responsesServer(t, "plain")
+	h := newTestHarness(t, "plain")
 	defer h.Close()
 
 	resp, body := h.post(t, "/mock/v1/responses", map[string]any{
@@ -262,7 +253,7 @@ func TestResponsesStreaming(t *testing.T) {
 }
 
 func TestResponsesInputString(t *testing.T) {
-	h := responsesServer(t, "plain")
+	h := newTestHarness(t, "plain")
 	defer h.Close()
 
 	_, body := h.post(t, "/mock/v1/responses", map[string]any{
@@ -317,7 +308,7 @@ func TestRenderResponsesInput(t *testing.T) {
 }
 
 func TestResponsesRejectsContentlessInput(t *testing.T) {
-	h := responsesServer(t, "plain")
+	h := newTestHarness(t, "plain")
 	defer h.Close()
 
 	resp, body := h.post(t, "/mock/v1/responses", map[string]any{
