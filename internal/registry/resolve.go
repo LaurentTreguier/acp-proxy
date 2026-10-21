@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -18,8 +20,8 @@ import (
 )
 
 // Client resolves agent ids to runnable agent commands. It merges static
-// agents with registry entries and installs binary distributions on
-// demand.
+// agents with registry entries, prefers locally installed binaries over
+// registry downloads, and installs binary distributions on demand.
 type Client struct {
 	url       string
 	cacheDir  string
@@ -29,6 +31,8 @@ type Client struct {
 	cache     cache
 	installMu sync.Mutex
 	installs  map[string]*sync.Mutex
+	localMu   sync.Mutex
+	local     map[string]string // agent id -> resolved local command, "" when absent
 	http      *http.Client
 }
 
@@ -59,6 +63,7 @@ func New(url, cacheDir, dir, perm string, static map[string]acp.Agent) *Client {
 		perm:     perm,
 		static:   static,
 		installs: make(map[string]*sync.Mutex),
+		local:    make(map[string]string),
 		http:     &http.Client{Timeout: fetchTimeout},
 	}
 }
@@ -159,6 +164,15 @@ func (c *Client) binaryAgent(ctx context.Context, entry Entry) (acp.Agent, error
 		return acp.Agent{}, fmt.Errorf("agent %q has no binary distribution for %s",
 			entry.ID, platformKey())
 	}
+	if cmd, found := c.probeLocal(entry.ID, d.Cmd); found {
+		return acp.Agent{
+			ID:          entry.ID,
+			Command:     cmd,
+			Args:        d.Args,
+			Dir:         c.dir,
+			Permissions: c.perm,
+		}, nil
+	}
 	dir, err := c.ensureInstalled(ctx, entry, d)
 	if err != nil {
 		return acp.Agent{}, err
@@ -174,6 +188,34 @@ func (c *Client) binaryAgent(ctx context.Context, entry Entry) (acp.Agent, error
 		Dir:         c.dir,
 		Permissions: c.perm,
 	}, nil
+}
+
+// probeLocal looks for the agent binary on the PATH before downloading:
+// agents the user installed elsewhere (brew, npm -g, release tarballs)
+// win over the registry archive. A local binary bypasses the registry's
+// pinned version and checksum, so a hit is logged; the outcome is cached
+// per agent id to keep repeat resolutions cheap and the log quiet.
+func (c *Client) probeLocal(id, cmd string) (string, bool) {
+	c.localMu.Lock()
+	path, probed := c.local[id]
+	c.localMu.Unlock()
+	if probed {
+		return path, path != ""
+	}
+	name := cmd
+	if i := strings.LastIndexAny(name, `/\`); i >= 0 {
+		name = name[i+1:]
+	}
+	path, err := exec.LookPath(name)
+	found := err == nil
+	c.localMu.Lock()
+	c.local[id] = path
+	c.localMu.Unlock()
+	if found {
+		log.Printf("acp-proxy: agent %q: using locally installed %s (registry version pin bypassed)",
+			id, path)
+	}
+	return path, found
 }
 
 // extractorVersion is written into the install marker; a marker from an

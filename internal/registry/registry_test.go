@@ -215,6 +215,40 @@ func TestResolveBinaryInstallsOnce(t *testing.T) {
 	}
 }
 
+func TestResolveBinaryPrefersLocal(t *testing.T) {
+	// An agent the user installed elsewhere wins over the registry
+	// download: the binary is found on the PATH and no archive is
+	// fetched.
+	binDir := t.TempDir()
+	bin := filepath.Join(binDir, "fake-agent")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	srv := newRegistryServer(t, makeArchive(t))
+	cacheDir := t.TempDir()
+	c := New(srv.URL+"/registry.json", cacheDir, ".", "cancel", nil)
+	if err := c.Warmup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	agent, err := c.Resolve(context.Background(), "bin-agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Command != bin {
+		t.Errorf("command = %q, want the local binary %q", agent.Command, bin)
+	}
+	installed, err := filepath.Glob(filepath.Join(cacheDir, "agents", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(installed) != 0 {
+		t.Errorf("archive was downloaded despite the local install: %v", installed)
+	}
+}
+
 func TestResolveUnknown(t *testing.T) {
 	srv := newRegistryServer(t, nil)
 	c := newClient(t, srv)
