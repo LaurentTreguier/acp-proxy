@@ -38,7 +38,7 @@ type UnknownAgentError struct {
 }
 
 func (e *UnknownAgentError) Error() string {
-	return fmt.Sprintf("unknown agent %q, see GET /v1/models", e.ID)
+	return fmt.Sprintf("unknown agent %q, see GET /agents", e.ID)
 }
 
 // Server serves the OpenAI-compatible API backed by ACP agents.
@@ -56,7 +56,7 @@ func New(resolver Resolver, pool *acp.Pool) *Server {
 // Register wires the API onto an http.ServeMux. Every request is scoped
 // to one agent through the URL prefix: /{agent}/v1/...
 func (s *Server) Register(mux *http.ServeMux) {
-	mux.HandleFunc("GET /v1/models", s.modelsAll)
+	mux.HandleFunc("GET /agents", s.agentsList)
 	mux.HandleFunc("GET /{agent}/v1/models", s.modelsOne)
 	mux.HandleFunc("POST /v1/chat/completions", s.unprefixed)
 	mux.HandleFunc("POST /{agent}/v1/chat/completions", s.chatCompletions)
@@ -67,13 +67,17 @@ func (s *Server) unprefixed(w http.ResponseWriter, r *http.Request) {
 		"no agent selected: use the /{agent}/v1/chat/completions path prefix")
 }
 
-func (s *Server) modelsAll(w http.ResponseWriter, r *http.Request) {
+// agentsList lists every known agent id, one per line, as plain text.
+func (s *Server) agentsList(w http.ResponseWriter, r *http.Request) {
 	agents, err := s.resolver.List(r.Context())
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "server_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": modelList(agents)})
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	for _, a := range agents {
+		fmt.Fprintln(w, a.ID)
+	}
 }
 
 func (s *Server) modelsOne(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +94,7 @@ func (s *Server) modelsOne(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(w, http.StatusNotFound, "invalid_request_error",
-		fmt.Sprintf("unknown agent %q, see GET /v1/models", id))
+		fmt.Sprintf("unknown agent %q, see GET /agents", id))
 }
 
 func modelList(agents []AgentInfo) []map[string]any {

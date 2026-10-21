@@ -1,5 +1,6 @@
 // Package openai implements the OpenAI-compatible HTTP surface of the
-// proxy: /v1/models and /v1/chat/completions.
+// proxy: /{agent}/v1/models and /{agent}/v1/chat/completions, plus the
+// plain-text /agents listing.
 package openai
 
 import "encoding/json"
