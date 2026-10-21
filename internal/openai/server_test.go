@@ -292,10 +292,11 @@ func TestBuildPrompt(t *testing.T) {
 		{Role: "system", Content: json.RawMessage(`"be brief"`)},
 		{Role: "user", Content: json.RawMessage(`"first"`)},
 		{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"hi"},{"type":"image_url"}]`)},
+		{Role: "tool", Content: json.RawMessage(`"42"`)},
 		{Role: "user", Content: json.RawMessage(`"second"`)},
 	}
 	got := buildPrompt(messages)
-	want := "[System instructions]\nbe brief\n\nUser: first\nAssistant: hi\nUser: second"
+	want := "[System instructions]\nbe brief\n\nUser: first\nAssistant: hi\n[tool result] 42\nUser: second"
 	if got != want {
 		t.Errorf("buildPrompt = %q, want %q", got, want)
 	}

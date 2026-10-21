@@ -1,3 +1,7 @@
+// Package openai implements the OpenAI-compatible HTTP surface of the
+// proxy: the plain-text /agents listing, /{agent}/v1/models,
+// /{agent}/v1/chat/completions and the Responses API, all backed by ACP
+// agents.
 package openai
 
 import (
@@ -164,7 +168,6 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, sessio
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
 	id := "chatcmpl-" + acp.RandomID()
@@ -227,25 +230,6 @@ func finishReason(stopReason string) string {
 	default:
 		return "stop"
 	}
-}
-
-// buildPrompt renders the OpenAI message list as a single ACP prompt text
-// block. Every request starts a fresh ACP session, so prior conversation
-// is included as a transcript for context.
-func buildPrompt(messages []Message) string {
-	var sb strings.Builder
-	for _, m := range messages {
-		text := extractText(m.Content)
-		switch m.Role {
-		case "system":
-			fmt.Fprintf(&sb, "[System instructions]\n%s\n\n", text)
-		case "user":
-			fmt.Fprintf(&sb, "User: %s\n", text)
-		case "assistant", "tool":
-			fmt.Fprintf(&sb, "Assistant: %s\n", text)
-		}
-	}
-	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
