@@ -1,6 +1,6 @@
 // acp-proxy is a web server exposing an OpenAI-compatible API that routes
 // requests to ACP (Agent Client Protocol) agents. Zero-config: running it
-// with no arguments starts a server on 127.0.0.1:8080; agents are resolved
+// with no arguments starts a server on 127.0.0.1:11734; agents are resolved
 // on demand from the ACP registry by id, via the /{agent}/v1/... URL
 // prefix. Every option is available as a flag and as an ACP_PROXY_*
 // environment variable.

@@ -13,6 +13,13 @@ import (
 // Env var prefix shared by every option.
 const envPrefix = "ACP_PROXY_"
 
+// DefaultPort is the listen port used when nothing else is configured.
+// 11734 sits in the neighborhood of other local AI tools (Ollama uses
+// 11434, LM Studio 1234) but is unregistered and unused in practice —
+// unlike, say, 11435, which every Ollama guide recommends as the
+// alternate port.
+const DefaultPort = 11734
+
 // DefaultModel is the model name given to an agent spec without an
 // explicit "name=" prefix.
 const DefaultModel = "default"
@@ -54,7 +61,7 @@ type Options struct {
 func Parse(args []string, getenv func(string) string) (*Options, error) {
 	opts := &Options{}
 
-	portDefault := 8080
+	portDefault := DefaultPort
 	if v := getenv(envPrefix + "PORT"); v != "" {
 		p, err := strconv.Atoi(v)
 		if err != nil {
@@ -99,8 +106,8 @@ func Parse(args []string, getenv func(string) string) (*Options, error) {
 		"`directory` for downloaded agent binaries (default: the user cache directory)")
 
 	// The standard flag package stops at the first non-flag argument, so
-	// loop to allow the positional port anywhere: "acp-proxy 8080 -auto"
-	// and "acp-proxy -auto 8080" both work.
+	// loop to allow the positional port anywhere: "acp-proxy 11734 -auto"
+	// and "acp-proxy -auto 11734" both work.
 	rest := args
 	var portArg int
 	for {
@@ -214,11 +221,11 @@ entries with the same id.
 Examples:
   acp-proxy
   acp-proxy 8080
-  curl http://127.0.0.1:8080/claude-acp/v1/chat/completions ...
+  curl http://127.0.0.1:11734/claude-acp/v1/chat/completions ...
   acp-proxy -agent "claude-code=npx -y @zed-industries/claude-code-acp"
 
 Environment:
-  ACP_PROXY_PORT       listen port (default 8080)
+  ACP_PROXY_PORT       listen port (default 11734)
   ACP_PROXY_HOST       listen host (default 127.0.0.1)
   ACP_PROXY_AGENTS     static agent specs separated by ";"
   ACP_PROXY_DIR        working directory for agent sessions
