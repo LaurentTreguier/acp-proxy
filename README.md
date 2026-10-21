@@ -13,10 +13,12 @@ Protocol) server via a built-in ACP client, backed by
   [ACP registry](https://agentclientprotocol.com/get-started/registry) by
   id, through a URL prefix: `/{agent}/v1/chat/completions`. The proxy
   spawns the agent as a subprocess and speaks ACP over its stdio.
-- Registry agents are downloaded automatically on first use: `npx`
-  distributions run through `npx -y` (which fetches the package), binary
-  distributions are downloaded, sha256-verified and extracted to a cache
-  directory.
+- Registry agents are resolved to a runnable command on first use: `npx`
+  distributions run through `npx -y` (which itself caches the package);
+  binary distributions first probe the PATH — an agent the user already
+  installed elsewhere is used as-is (logged, since the registry's pinned
+  version and checksum are bypassed) — and otherwise the archive is
+  downloaded, sha256-verified and extracted to a cache directory.
 - Each request gets a fresh ACP session on the agent's pooled process,
   released afterwards with `session/close` when the agent supports it.
   The OpenAI message history is rendered as a single prompt transcript
@@ -102,7 +104,9 @@ first: positional port, flags, environment, defaults.
 - The proxy advertises no fs/terminal client capabilities; agents asking
   for them get a JSON-RPC "method not supported" error.
 - Binary archives are verified against the registry's sha256 when
-  present and extracted with path-traversal protection.
+  present and extracted with path-traversal protection. When the agent
+  binary is found on the PATH first, the pinned registry version and
+  checksum are bypassed in favor of the local install.
 - No token accounting (`usage` is zero everywhere, count_tokens is a
   rough character estimate), no tool-call surface in responses (ACP tool
   calls are agent-side and not exposed), no function calling on any

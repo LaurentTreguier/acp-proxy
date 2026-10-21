@@ -1,7 +1,9 @@
 // Package registry resolves ACP agent ids to runnable agent commands,
-// using the ACP registry (https://agentclientprotocol.com) for automatic
-// download and execution of known agents, plus optional static agent
-// definitions that take precedence over registry entries.
+// using the ACP registry (https://agentclientprotocol.com): an agent
+// binary already installed on the local machine is preferred when found
+// on the PATH, otherwise registry agents are downloaded and run
+// automatically. Statically declared agents take precedence over
+// registry entries.
 package registry
 
 import (
