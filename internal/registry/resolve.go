@@ -146,6 +146,7 @@ func (c *Client) npxAgent(entry Entry) acp.Agent {
 		env = append(env, k+"="+v)
 	}
 	return acp.Agent{
+		ID:          entry.ID,
 		Command:     "npx",
 		Args:        append([]string{"-y", d.Package}, d.Args...),
 		Env:         env,
@@ -169,6 +170,7 @@ func (c *Client) binaryAgent(ctx context.Context, entry Entry) (acp.Agent, error
 		cmd = filepath.Join(dir, strings.TrimPrefix(cmd, "./"))
 	}
 	return acp.Agent{
+		ID:          entry.ID,
 		Command:     cmd,
 		Args:        d.Args,
 		Dir:         c.dir,
@@ -176,38 +178,64 @@ func (c *Client) binaryAgent(ctx context.Context, entry Entry) (acp.Agent, error
 	}, nil
 }
 
+// extractorVersion is written into the install marker; a marker from an
+// older extractor (e.g. one that dropped symlinks) forces re-extraction.
+const extractorVersion = "extractor-v2\n"
+
 // ensureInstalled downloads, verifies and extracts the agent archive once
 // per agent and version; concurrent callers wait for the winner.
 func (c *Client) ensureInstalled(ctx context.Context, entry Entry, d *BinaryDist) (string, error) {
 	key := entry.ID + "@" + entry.Version
 	dir := filepath.Join(c.cacheDir, "agents", key)
 	marker := filepath.Join(dir, ".installed")
-
-	if _, err := os.Stat(marker); err == nil {
-		return dir, nil
-	}
+	archivePath := filepath.Join(dir, "archive"+archiveExt(d.Archive))
 
 	mu := c.mutexFor(key)
 	mu.Lock()
 	defer mu.Unlock()
-	if _, err := os.Stat(marker); err == nil {
+
+	if markerOK(marker, d.Archive) {
 		return dir, nil
 	}
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("install %s: %w", key, err)
 	}
-	archivePath := filepath.Join(dir, "archive"+archiveExt(d.Archive))
-	if err := c.download(ctx, d.Archive, archivePath, d.SHA256); err != nil {
-		return "", fmt.Errorf("install %s: %w", key, err)
+	// Reuse an already-downloaded archive when it still matches the
+	// expected checksum.
+	if !archiveValid(archivePath, d.SHA256) {
+		if err := c.download(ctx, d.Archive, archivePath, d.SHA256); err != nil {
+			return "", fmt.Errorf("install %s: %w", key, err)
+		}
 	}
 	if err := extract(archivePath, dir); err != nil {
 		return "", fmt.Errorf("install %s: %w", key, err)
 	}
-	if err := os.WriteFile(marker, []byte(d.Archive), 0o644); err != nil {
+	if err := os.WriteFile(marker, []byte(extractorVersion+d.Archive), 0o644); err != nil {
 		return "", fmt.Errorf("install %s: %w", key, err)
 	}
 	return dir, nil
+}
+
+func markerOK(marker, archive string) bool {
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return false
+	}
+	return string(data) == extractorVersion+archive
+}
+
+func archiveValid(path, sha string) bool {
+	if sha == "" {
+		st, err := os.Stat(path)
+		return err == nil && st.Size() > 0
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]) == strings.ToLower(sha)
 }
 
 func (c *Client) mutexFor(key string) *sync.Mutex {
