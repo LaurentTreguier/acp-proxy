@@ -79,39 +79,43 @@ func chatBody(model string, stream bool) map[string]any {
 	}
 }
 
-func TestModels(t *testing.T) {
+func TestAgentsListing(t *testing.T) {
 	srv := testServer(t, "plain", "cancel")
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/v1/models")
+	resp, err := http.Get(srv.URL + "/agents")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var body struct {
-		Object string `json:"object"`
-		Data   []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+	if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Errorf("content-type = %q", ct)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if body.Object != "list" || len(body.Data) != 1 || body.Data[0].ID != "mock" {
-		t.Errorf("unexpected models response: %+v", body)
+	if got, want := string(body), "mock\n"; got != want {
+		t.Errorf("agents listing = %q, want %q", got, want)
 	}
 
-	// Prefixed models endpoint for a single agent.
+	// The per-agent models endpoint remains OpenAI-shaped.
 	resp2, err := http.Get(srv.URL + "/mock/v1/models")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp2.Body.Close()
-	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
+	var body2 struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&body2); err != nil {
 		t.Fatal(err)
 	}
-	if len(body.Data) != 1 || body.Data[0].ID != "mock" {
-		t.Errorf("unexpected prefixed models response: %+v", body)
+	if len(body2.Data) != 1 || body2.Data[0].ID != "mock" {
+		t.Errorf("unexpected prefixed models response: %+v", body2)
 	}
 
 	// Unknown prefix -> 404.

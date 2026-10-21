@@ -31,8 +31,8 @@ go build -o acp-proxy .
 ./acp-proxy                 # 127.0.0.1:11734, agents on demand
 ./acp-proxy 8080            # positional port
 
-curl http://127.0.0.1:11734/v1/models            # every registry agent
-curl http://127.0.0.1:11734/claude-acp/v1/models # one agent
+curl http://127.0.0.1:11734/agents                 # plain text list of agent ids
+curl http://127.0.0.1:11734/claude-acp/v1/models  # one agent, OpenAI-shaped
 curl http://127.0.0.1:11734/claude-acp/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"claude-acp","messages":[{"role":"user","content":"hello"}]}'
@@ -45,9 +45,9 @@ proxy's environment.
 
 Every completion request is scoped to one agent through the URL prefix.
 
-- `GET /v1/models` — every known agent: the ACP registry plus any
-  statically declared agents.
-- `GET /{agent}/v1/models` — one agent.
+- `GET /agents` — plain text list of every known agent id (one per
+  line): the ACP registry plus any statically declared agents.
+- `GET /{agent}/v1/models` — one agent, OpenAI-shaped.
 - `POST /{agent}/v1/chat/completions` — completion routed to that agent,
   spawned on demand. Same body shape as OpenAI (`messages`, `stream`).
 
