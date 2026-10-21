@@ -45,12 +45,15 @@ func (e *UnknownAgentError) Error() string {
 type Server struct {
 	resolver Resolver
 	pool     *acp.Pool
+	// respStore stores sessions per response id, enabling
+	// previous_response_id follow-ups.
+	respStore *responseStore
 }
 
 // New builds a Server on top of an agent resolver and an agent process
 // pool.
 func New(resolver Resolver, pool *acp.Pool) *Server {
-	return &Server{resolver: resolver, pool: pool}
+	return &Server{resolver: resolver, pool: pool, respStore: newResponseStore(1024)}
 }
 
 // Register wires the API onto an http.ServeMux. Every request is scoped
@@ -60,11 +63,25 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{agent}/v1/models", s.modelsOne)
 	mux.HandleFunc("POST /v1/chat/completions", s.unprefixed)
 	mux.HandleFunc("POST /{agent}/v1/chat/completions", s.chatCompletions)
+	mux.HandleFunc("POST /v1/responses", s.unprefixed)
+	mux.HandleFunc("POST /{agent}/v1/responses", s.responses)
+	mux.HandleFunc("GET /{agent}/v1/responses/{id}", s.getResponse)
 }
 
 func (s *Server) unprefixed(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "invalid_request_error",
-		"no agent selected: use the /{agent}/v1/chat/completions path prefix")
+		"no agent selected: use the /{agent}/v1/... path prefix")
+}
+
+// writeResolveError maps resolution failures to HTTP errors: unknown
+// agents are 404s, everything else is a 502.
+func (s *Server) writeResolveError(w http.ResponseWriter, err error) {
+	var unknown *UnknownAgentError
+	if errors.As(err, &unknown) {
+		writeError(w, http.StatusNotFound, "server_error", err.Error())
+		return
+	}
+	writeError(w, http.StatusBadGateway, "server_error", err.Error())
 }
 
 // agentsList lists every known agent id, one per line, as plain text.
@@ -124,12 +141,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	agent, err := s.resolver.Resolve(r.Context(), agentID)
 	if err != nil {
-		status := http.StatusBadGateway
-		var unknown *UnknownAgentError
-		if errors.As(err, &unknown) {
-			status = http.StatusNotFound
-		}
-		writeError(w, status, "server_error", err.Error())
+		s.writeResolveError(w, err)
 		return
 	}
 
@@ -164,7 +176,7 @@ func (s *Server) blockingCompletion(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 	writeJSON(w, http.StatusOK, ChatCompletionResponse{
-		ID:      "chatcmpl-" + randomID(),
+		ID:      "chatcmpl-" + RandomID(),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   req.Model,
@@ -184,7 +196,7 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, sessio
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	id := "chatcmpl-" + randomID()
+	id := "chatcmpl-" + RandomID()
 	created := time.Now().Unix()
 	send := func(chunk ChatCompletionChunk) {
 		data, _ := json.Marshal(chunk)
@@ -275,7 +287,7 @@ func writeError(w http.ResponseWriter, status int, typ, message string) {
 	writeJSON(w, status, Error{Error: errorBody{Message: message, Type: typ}})
 }
 
-func randomID() string {
+func RandomID() string {
 	var b [12]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "000000000000"

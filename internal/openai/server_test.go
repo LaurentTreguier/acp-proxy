@@ -56,6 +56,32 @@ func testServer(t *testing.T, mode, permissions string) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// testHarness wraps a test server with relative-path helpers.
+type testHarness struct {
+	t   *testing.T
+	srv *httptest.Server
+}
+
+func newTestHarness(t *testing.T, mode string) *testHarness {
+	return &testHarness{t: t, srv: testServer(t, mode, "cancel")}
+}
+
+func (h *testHarness) Close() { h.srv.Close() }
+
+func (h *testHarness) post(t *testing.T, path string, body any) (*http.Response, string) {
+	return post(t, h.srv.URL+path, body)
+}
+
+func (h *testHarness) get(t *testing.T, path string) (*http.Response, string) {
+	resp, err := http.Get(h.srv.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, string(raw)
+}
+
 func post(t *testing.T, url string, body any) (*http.Response, string) {
 	t.Helper()
 	data, err := json.Marshal(body)
