@@ -32,8 +32,8 @@ func main() {
 
 	static := make(map[string]acp.Agent, len(opts.Agents))
 	for _, a := range opts.Agents {
-		static[a.Model] = acp.Agent{
-			ID:          a.Model,
+		static[a.ID] = acp.Agent{
+			ID:          a.ID,
 			Command:     a.Command,
 			Args:        a.Args,
 			Dir:         opts.Dir,

@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"acp-proxy/internal/acp"
-	"acp-proxy/internal/openai"
 )
 
 func TestParseIndex(t *testing.T) {
@@ -68,7 +67,7 @@ func TestPlatformKey(t *testing.T) {
 
 // newRegistryServer serves a registry index with an npx agent and a
 // binary agent whose archive is served by the same server.
-func newRegistryServer(t *testing.T, archive []byte) (*httptest.Server, *Entry) {
+func newRegistryServer(t *testing.T, archive []byte) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/registry.json", func(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +76,7 @@ func newRegistryServer(t *testing.T, archive []byte) (*httptest.Server, *Entry) 
 				ID: "npx-agent", Name: "Npx Agent", Version: "1.0.0",
 				Distribution: Distribution{Npx: &NpxDist{
 					Package: "some-acp@1.0.0", Args: []string{"--acp"},
-					Env:     map[string]string{"FOO": "bar"},
+					Env: map[string]string{"FOO": "bar"},
 				}},
 			},
 			{
@@ -97,7 +96,7 @@ func newRegistryServer(t *testing.T, archive []byte) (*httptest.Server, *Entry) 
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, nil
+	return srv
 }
 
 func makeArchive(t *testing.T) []byte {
@@ -143,7 +142,7 @@ func newClient(t *testing.T, srv *httptest.Server) *Client {
 }
 
 func TestResolveNpx(t *testing.T) {
-	srv, _ := newRegistryServer(t, nil)
+	srv := newRegistryServer(t, nil)
 	c := newClient(t, srv)
 	if err := c.Warmup(context.Background()); err != nil {
 		t.Fatal(err)
@@ -168,7 +167,7 @@ func TestResolveNpx(t *testing.T) {
 
 func TestResolveBinaryInstallsOnce(t *testing.T) {
 	archive := makeArchive(t)
-	srv, _ := newRegistryServer(t, archive)
+	srv := newRegistryServer(t, archive)
 	c := newClient(t, srv)
 	if err := c.Warmup(context.Background()); err != nil {
 		t.Fatal(err)
@@ -217,20 +216,20 @@ func TestResolveBinaryInstallsOnce(t *testing.T) {
 }
 
 func TestResolveUnknown(t *testing.T) {
-	srv, _ := newRegistryServer(t, nil)
+	srv := newRegistryServer(t, nil)
 	c := newClient(t, srv)
 	if err := c.Warmup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	_, err := c.Resolve(context.Background(), "nope")
-	var unknown *openai.UnknownAgentError
+	var unknown *acp.UnknownAgentError
 	if !errors.As(err, &unknown) || unknown.ID != "nope" {
 		t.Errorf("expected UnknownAgentError, got %v", err)
 	}
 }
 
 func TestStaticAgentsTakePrecedence(t *testing.T) {
-	srv, _ := newRegistryServer(t, nil)
+	srv := newRegistryServer(t, nil)
 	static := map[string]acp.Agent{
 		"npx-agent": {Command: "/my/own/wrapper", Args: []string{"--acp"}},
 	}
@@ -248,7 +247,7 @@ func TestStaticAgentsTakePrecedence(t *testing.T) {
 }
 
 func TestListIncludesStaticAndRegistry(t *testing.T) {
-	srv, _ := newRegistryServer(t, nil)
+	srv := newRegistryServer(t, nil)
 	static := map[string]acp.Agent{"local-agent": {Command: "x"}}
 	c := New(srv.URL+"/registry.json", t.TempDir(), ".", "cancel", static)
 	infos, err := c.List(context.Background())

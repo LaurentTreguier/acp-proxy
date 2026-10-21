@@ -75,9 +75,6 @@ Anthropic API:
 
 The unprefixed endpoints return 404 with a hint.
 
-The unprefixed `POST /v1/chat/completions` is not supported and returns
-404 with a hint.
-
 Stop-reason mapping: `end_turn`/`cancelled` → `stop`, `max_tokens`/
 `max_turn_requests` → `length`, `refusal` → `content_filter`.
 

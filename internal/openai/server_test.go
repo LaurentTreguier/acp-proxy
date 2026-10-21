@@ -29,13 +29,13 @@ func TestMockAgentProcess(t *testing.T) {
 // re-execs the test binary as the mock ACP agent.
 type fakeResolver struct{}
 
-func (f *fakeResolver) List(ctx context.Context) ([]AgentInfo, error) {
-	return []AgentInfo{{ID: "mock", Name: "Mock", Version: "1.0", Description: "mock agent"}}, nil
+func (f *fakeResolver) List(ctx context.Context) ([]acp.AgentInfo, error) {
+	return []acp.AgentInfo{{ID: "mock", Name: "Mock", Version: "1.0", Description: "mock agent"}}, nil
 }
 
 func (f *fakeResolver) Resolve(ctx context.Context, id string) (acp.Agent, error) {
 	if id != "mock" {
-		return acp.Agent{}, &UnknownAgentError{ID: id}
+		return acp.Agent{}, &acp.UnknownAgentError{ID: id}
 	}
 	return acp.Agent{
 		Command:     os.Args[0],
@@ -292,10 +292,11 @@ func TestBuildPrompt(t *testing.T) {
 		{Role: "system", Content: json.RawMessage(`"be brief"`)},
 		{Role: "user", Content: json.RawMessage(`"first"`)},
 		{Role: "assistant", Content: json.RawMessage(`[{"type":"text","text":"hi"},{"type":"image_url"}]`)},
+		{Role: "tool", Content: json.RawMessage(`"42"`)},
 		{Role: "user", Content: json.RawMessage(`"second"`)},
 	}
 	got := buildPrompt(messages)
-	want := "[System instructions]\nbe brief\n\nUser: first\nAssistant: hi\nUser: second"
+	want := "[System instructions]\nbe brief\n\nUser: first\nAssistant: hi\n[tool result] 42\nUser: second"
 	if got != want {
 		t.Errorf("buildPrompt = %q, want %q", got, want)
 	}

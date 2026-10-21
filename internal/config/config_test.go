@@ -79,11 +79,8 @@ func TestParseAgentFlag(t *testing.T) {
 		t.Fatalf("agents = %d, want 2", len(opts.Agents))
 	}
 	a := opts.Agents[0]
-	if a.Model != "claude-code" || a.Command != "npx" || len(a.Args) != 2 || a.Args[0] != "-y" {
+	if a.ID != "claude-code" || a.Command != "npx" || len(a.Args) != 2 || a.Args[0] != "-y" {
 		t.Errorf("agent[0] = %+v", a)
-	}
-	if _, ok := opts.Agent("claude-code"); !ok {
-		t.Error("Agent(claude-code) not found")
 	}
 }
 
@@ -96,7 +93,7 @@ func TestParseUnnamedAgent(t *testing.T) {
 		t.Fatalf("agents = %d, want 1", len(opts.Agents))
 	}
 	a := opts.Agents[0]
-	if a.Model != DefaultModel || a.Command != "/usr/local/bin/my-agent" || len(a.Args) != 1 || a.Args[0] != "--flag" {
+	if a.ID != DefaultAgentID || a.Command != "/usr/local/bin/my-agent" || len(a.Args) != 1 || a.Args[0] != "--flag" {
 		t.Errorf("agent = %+v", a)
 	}
 }
@@ -112,10 +109,10 @@ func TestParseAgentsEnv(t *testing.T) {
 	if len(opts.Agents) != 2 {
 		t.Fatalf("agents = %d, want 2", len(opts.Agents))
 	}
-	if opts.Agents[0].Model != "a" || opts.Agents[0].Command != "cmd1" || len(opts.Agents[0].Args) != 2 {
+	if opts.Agents[0].ID != "a" || opts.Agents[0].Command != "cmd1" || len(opts.Agents[0].Args) != 2 {
 		t.Errorf("agent[0] = %+v", opts.Agents[0])
 	}
-	if opts.Agents[1].Model != "b" || opts.Agents[1].Command != "cmd2" {
+	if opts.Agents[1].ID != "b" || opts.Agents[1].Command != "cmd2" {
 		t.Errorf("agent[1] = %+v", opts.Agents[1])
 	}
 }
@@ -148,8 +145,8 @@ func TestParseAuto(t *testing.T) {
 
 func TestParseDuplicateModel(t *testing.T) {
 	_, err := Parse([]string{"-agent", "m=cmd1", "-agent", "m=cmd2"}, emptyEnv)
-	if err == nil || !strings.Contains(err.Error(), "duplicate model") {
-		t.Errorf("expected duplicate model error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "duplicate agent id") {
+		t.Errorf("expected duplicate agent id error, got %v", err)
 	}
 }
 

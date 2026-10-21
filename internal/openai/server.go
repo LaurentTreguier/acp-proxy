@@ -1,9 +1,10 @@
+// Package openai implements the OpenAI-compatible HTTP surface of the
+// proxy: the plain-text /agents listing, /{agent}/v1/models,
+// /{agent}/v1/chat/completions and the Responses API, all backed by ACP
+// agents.
 package openai
 
 import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,36 +15,9 @@ import (
 	"acp-proxy/internal/acp"
 )
 
-// AgentInfo describes one resolvable ACP agent.
-type AgentInfo struct {
-	ID          string
-	Name        string
-	Version     string
-	Description string
-}
-
-// Resolver turns an agent id into a runnable ACP agent, on demand.
-type Resolver interface {
-	// List returns every known agent.
-	List(ctx context.Context) ([]AgentInfo, error)
-	// Resolve returns the agent to spawn for an id. Agents are spawned
-	// per request, so Resolve must be safe for concurrent use.
-	Resolve(ctx context.Context, id string) (acp.Agent, error)
-}
-
-// UnknownAgentError reports an agent id that the resolver does not know;
-// the API maps it to HTTP 404.
-type UnknownAgentError struct {
-	ID string
-}
-
-func (e *UnknownAgentError) Error() string {
-	return fmt.Sprintf("unknown agent %q, see GET /agents", e.ID)
-}
-
 // Server serves the OpenAI-compatible API backed by ACP agents.
 type Server struct {
-	resolver Resolver
+	resolver acp.Resolver
 	pool     *acp.Pool
 	// respStore stores sessions per response id, enabling
 	// previous_response_id follow-ups.
@@ -53,7 +27,7 @@ type Server struct {
 // New builds a Server on top of an agent resolver and an agent process
 // pool. responsesDir is where Responses API records are persisted so
 // conversations survive restarts; empty disables disk persistence.
-func New(resolver Resolver, pool *acp.Pool, responsesDir string) *Server {
+func New(resolver acp.Resolver, pool *acp.Pool, responsesDir string) *Server {
 	return &Server{resolver: resolver, pool: pool, respStore: newResponseStore(1024, responsesDir)}
 }
 
@@ -61,7 +35,7 @@ func New(resolver Resolver, pool *acp.Pool, responsesDir string) *Server {
 // to one agent through the URL prefix: /{agent}/v1/...
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /agents", s.agentsList)
-	mux.HandleFunc("GET /{agent}/v1/models", s.modelsOne)
+	mux.HandleFunc("GET /{agent}/v1/models", s.modelsList)
 	mux.HandleFunc("POST /v1/chat/completions", s.unprefixed)
 	mux.HandleFunc("POST /{agent}/v1/chat/completions", s.chatCompletions)
 	mux.HandleFunc("POST /v1/responses", s.unprefixed)
@@ -77,9 +51,9 @@ func (s *Server) unprefixed(w http.ResponseWriter, r *http.Request) {
 // writeResolveError maps resolution failures to HTTP errors: unknown
 // agents are 404s, everything else is a 502.
 func (s *Server) writeResolveError(w http.ResponseWriter, err error) {
-	var unknown *UnknownAgentError
+	var unknown *acp.UnknownAgentError
 	if errors.As(err, &unknown) {
-		writeError(w, http.StatusNotFound, "server_error", err.Error())
+		writeError(w, http.StatusNotFound, "invalid_request_error", err.Error())
 		return
 	}
 	writeError(w, http.StatusBadGateway, "server_error", err.Error())
@@ -98,7 +72,7 @@ func (s *Server) agentsList(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) modelsOne(w http.ResponseWriter, r *http.Request) {
+func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("agent")
 	agents, err := s.resolver.List(r.Context())
 	if err != nil {
@@ -107,7 +81,7 @@ func (s *Server) modelsOne(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, a := range agents {
 		if a.ID == id {
-			writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": modelList([]AgentInfo{a})})
+			writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": modelList([]acp.AgentInfo{a})})
 			return
 		}
 	}
@@ -115,7 +89,7 @@ func (s *Server) modelsOne(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("unknown agent %q, see GET /agents", id))
 }
 
-func modelList(agents []AgentInfo) []map[string]any {
+func modelList(agents []acp.AgentInfo) []map[string]any {
 	data := make([]map[string]any, 0, len(agents))
 	for _, a := range agents {
 		data = append(data, map[string]any{
@@ -177,7 +151,7 @@ func (s *Server) blockingCompletion(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 	writeJSON(w, http.StatusOK, ChatCompletionResponse{
-		ID:      "chatcmpl-" + RandomID(),
+		ID:      "chatcmpl-" + acp.RandomID(),
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   req.Model,
@@ -194,10 +168,9 @@ func (s *Server) streamCompletion(w http.ResponseWriter, r *http.Request, sessio
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	id := "chatcmpl-" + RandomID()
+	id := "chatcmpl-" + acp.RandomID()
 	created := time.Now().Unix()
 	send := func(chunk ChatCompletionChunk) {
 		data, _ := json.Marshal(chunk)
@@ -259,25 +232,6 @@ func finishReason(stopReason string) string {
 	}
 }
 
-// buildPrompt renders the OpenAI message list as a single ACP prompt text
-// block. Every request starts a fresh ACP session, so prior conversation
-// is included as a transcript for context.
-func buildPrompt(messages []Message) string {
-	var sb strings.Builder
-	for _, m := range messages {
-		text := extractText(m.Content)
-		switch m.Role {
-		case "system":
-			fmt.Fprintf(&sb, "[System instructions]\n%s\n\n", text)
-		case "user":
-			fmt.Fprintf(&sb, "User: %s\n", text)
-		case "assistant", "tool":
-			fmt.Fprintf(&sb, "Assistant: %s\n", text)
-		}
-	}
-	return strings.TrimSuffix(sb.String(), "\n")
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -286,12 +240,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, typ, message string) {
 	writeJSON(w, status, Error{Error: errorBody{Message: message, Type: typ}})
-}
-
-func RandomID() string {
-	var b [12]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "000000000000"
-	}
-	return hex.EncodeToString(b[:])
 }

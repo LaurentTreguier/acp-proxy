@@ -6,12 +6,12 @@ import (
 
 // Update kinds surfaced to the proxy.
 const (
-	KindAgentMessage = "agent_message_chunk"
-	KindAgentThought = "agent_thought_chunk"
-	KindToolCall     = "tool_call"
-	KindToolCallUpd  = "tool_call_update"
-	KindPlan         = "plan"
-	KindUserMessage  = "user_message_chunk"
+	KindAgentMessage   = "agent_message_chunk"
+	KindAgentThought   = "agent_thought_chunk"
+	KindToolCall       = "tool_call"
+	KindToolCallUpdate = "tool_call_update"
+	KindPlan           = "plan"
+	KindUserMessage    = "user_message_chunk"
 )
 
 // decodeUpdate flattens an SDK session notification into an Update.
@@ -32,7 +32,7 @@ func decodeUpdate(n sdk.SessionNotification) Update {
 		}
 	case u.ToolCallUpdate != nil:
 		upd := Update{
-			Kind:       KindToolCallUpd,
+			Kind:       KindToolCallUpdate,
 			ToolCallID: string(u.ToolCallUpdate.ToolCallId),
 		}
 		if u.ToolCallUpdate.Status != nil {

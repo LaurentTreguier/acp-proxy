@@ -11,18 +11,17 @@ import (
 	"strings"
 
 	"acp-proxy/internal/acp"
-	"acp-proxy/internal/openai"
 )
 
 // messageRequest is the subset of the Messages API request the proxy
 // consumes.
 type messageRequest struct {
-	Model       string          `json:"model"`
-	MaxTokens   *int            `json:"max_tokens"`
-	System      json.RawMessage `json:"system"`
-	Messages    []messageParam  `json:"messages"`
-	Stream      bool            `json:"stream"`
-	Thinking    *thinkingConfig `json:"thinking,omitempty"`
+	Model     string          `json:"model"`
+	MaxTokens *int            `json:"max_tokens"`
+	System    json.RawMessage `json:"system"`
+	Messages  []messageParam  `json:"messages"`
+	Stream    bool            `json:"stream"`
+	Thinking  *thinkingConfig `json:"thinking,omitempty"`
 }
 
 type thinkingConfig struct {
@@ -62,13 +61,13 @@ type messageResponse struct {
 
 // Server serves the Anthropic Messages API backed by ACP agents.
 type Server struct {
-	resolver openai.Resolver
+	resolver acp.Resolver
 	pool     *acp.Pool
 }
 
 // New builds a Server on top of an agent resolver and an agent process
 // pool.
-func New(resolver openai.Resolver, pool *acp.Pool) *Server {
+func New(resolver acp.Resolver, pool *acp.Pool) *Server {
 	return &Server{resolver: resolver, pool: pool}
 }
 
@@ -125,7 +124,7 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) writeResolveError(w http.ResponseWriter, err error) {
-	var unknown *openai.UnknownAgentError
+	var unknown *acp.UnknownAgentError
 	if errors.As(err, &unknown) {
 		writeError(w, http.StatusNotFound, "invalid_request_error", err.Error())
 		return
@@ -157,7 +156,7 @@ func (s *Server) blockingMessage(w http.ResponseWriter, r *http.Request, session
 	content = append(content, contentBlock{Type: "text", Text: text.String()})
 
 	writeJSON(w, http.StatusOK, messageResponse{
-		ID:         "msg_" + randomID(),
+		ID:         "msg_" + acp.RandomID(),
 		Type:       "message",
 		Role:       "assistant",
 		Model:      req.Model,
@@ -182,7 +181,7 @@ func (s *Server) streamMessage(w http.ResponseWriter, r *http.Request, session *
 	}
 
 	msg := messageResponse{
-		ID: "msg_" + randomID(), Type: "message", Role: "assistant",
+		ID: "msg_" + acp.RandomID(), Type: "message", Role: "assistant",
 		Model: req.Model, StopReason: "", Content: []contentBlock{}, Usage: usage{},
 	}
 	send("message_start", map[string]any{"type": "message_start", "message": msg})
@@ -335,12 +334,12 @@ func extractText(raw json.RawMessage) string {
 		return s
 	}
 	var blocks []struct {
-		Type    string          `json:"type"`
-		Text    string          `json:"text"`
-		Thinking string         `json:"thinking"`
-		Name    string          `json:"name"`
-		Input   json.RawMessage `json:"input"`
-		Content json.RawMessage `json:"content"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		Thinking string          `json:"thinking"`
+		Name     string          `json:"name"`
+		Input    json.RawMessage `json:"input"`
+		Content  json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		return ""
@@ -374,8 +373,4 @@ func writeError(w http.ResponseWriter, status int, typ, message string) {
 		"type":  "error",
 		"error": map[string]any{"type": typ, "message": message},
 	})
-}
-
-func randomID() string {
-	return openai.RandomID()
 }
