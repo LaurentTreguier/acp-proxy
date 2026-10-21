@@ -134,7 +134,12 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 		return // response already written
 	}
 
-	prompt := renderResponsesInput(req.Instructions, req.Input)
+	prompt, hasContent := renderResponsesInput(req.Instructions, req.Input)
+	if !hasContent {
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"input contains no renderable text content")
+		return
+	}
 
 	if req.Stream {
 		s.streamResponse(w, r, session, req, agentID, prompt, store, followUp)
@@ -331,19 +336,22 @@ func nilIfEmpty(s string) any {
 }
 
 // renderResponsesInput turns the Responses input field into a prompt
-// transcript: instructions first, then the input items in order.
-func renderResponsesInput(instructions string, input json.RawMessage) string {
+// transcript: instructions first, then the input items in order. The
+// second return reports whether any text content was found; requests
+// without renderable content are rejected by the caller instead of
+// reaching the agent as an empty conversation.
+func renderResponsesInput(instructions string, input json.RawMessage) (string, bool) {
 	var sb strings.Builder
 	if instructions != "" {
 		fmt.Fprintf(&sb, "[System instructions]\n%s\n\n", instructions)
 	}
 	if len(input) == 0 {
-		return strings.TrimSuffix(sb.String(), "\n")
+		return strings.TrimSuffix(sb.String(), "\n"), instructions != ""
 	}
 	var s string
 	if err := json.Unmarshal(input, &s); err == nil {
 		fmt.Fprintf(&sb, "User: %s\n", s)
-		return strings.TrimSuffix(sb.String(), "\n")
+		return strings.TrimSuffix(sb.String(), "\n"), true
 	}
 	// Input items: messages with a role, or raw items like
 	// function_call_output.
@@ -355,17 +363,23 @@ func renderResponsesInput(instructions string, input json.RawMessage) string {
 		Output  string          `json:"output"`
 	}
 	if err := json.Unmarshal(input, &items); err != nil {
-		return strings.TrimSuffix(sb.String(), "\n")
+		return strings.TrimSuffix(sb.String(), "\n"), instructions != ""
 	}
+	hasContent := instructions != ""
 	for _, it := range items {
 		switch {
 		case it.Type == "function_call_output":
 			fmt.Fprintf(&sb, "[tool result for %s] %s\n", it.CallID, it.Output)
+			hasContent = true
 		case it.Role != "":
-			fmt.Fprintf(&sb, "%s: %s\n", roleLabel(it.Role), extractText(it.Content))
+			text := extractText(it.Content)
+			fmt.Fprintf(&sb, "%s: %s\n", roleLabel(it.Role), text)
+			if text != "" {
+				hasContent = true
+			}
 		}
 	}
-	return strings.TrimSuffix(sb.String(), "\n")
+	return strings.TrimSuffix(sb.String(), "\n"), hasContent
 }
 
 func roleLabel(role string) string {

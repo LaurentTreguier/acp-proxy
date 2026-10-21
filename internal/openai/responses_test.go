@@ -201,19 +201,53 @@ func TestResponsesInputString(t *testing.T) {
 func TestRenderResponsesInput(t *testing.T) {
 	items, _ := json.Marshal([]map[string]any{
 		{"role": "system", "content": "be brief"},
-		{"role": "user", "content": "first"},
-		{"role": "assistant", "content": "hi"},
+		{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "first"}}},
+		{"role": "assistant", "content": []map[string]any{{"type": "output_text", "text": "hi"}}},
 		{"type": "function_call_output", "call_id": "call_1", "output": "42"},
-		{"role": "user", "content": "second"},
+		{"role": "user", "content": []map[string]any{{"type": "input_text", "text": "second"}}},
 	})
-	got := renderResponsesInput("sys prompt", items)
+	got, hasContent := renderResponsesInput("sys prompt", items)
 	want := "[System instructions]\nsys prompt\n\nSystem: be brief\nUser: first\nAssistant: hi\n[tool result for call_1] 42\nUser: second"
 	if got != want {
 		t.Errorf("render = %q, want %q", got, want)
 	}
+	if !hasContent {
+		t.Error("expected content to be detected")
+	}
 
 	s, _ := json.Marshal("just a string")
-	if got, want := renderResponsesInput("", s), "User: just a string"; got != want {
-		t.Errorf("string input = %q, want %q", got, want)
+	got, hasContent = renderResponsesInput("", s)
+	if got != "User: just a string" || !hasContent {
+		t.Errorf("string input = %q, hasContent = %v", got, hasContent)
+	}
+
+	// Chat-completions-style text parts keep working.
+	chat, _ := json.Marshal([]map[string]any{{"type": "text", "text": "legacy"}})
+	if got := extractText(chat); got != "legacy" {
+		t.Errorf("text part = %q", got)
+	}
+
+	// Non-text parts alone are rejected with hasContent=false.
+	empty, _ := json.Marshal([]map[string]any{
+		{"role": "user", "content": []map[string]any{{"type": "input_image", "image_url": "..."}}},
+	})
+	_, hasContent = renderResponsesInput("", empty)
+	if hasContent {
+		t.Error("image-only input must not count as content")
+	}
+}
+
+func TestResponsesRejectsContentlessInput(t *testing.T) {
+	h := responsesServer(t, "plain")
+	defer h.Close()
+
+	resp, body := h.post(t, "/mock/v1/responses", map[string]any{
+		"model": "gpt-x",
+		"input": []map[string]any{
+			{"role": "user", "content": []map[string]any{{"type": "input_image", "image_url": "..."}}},
+		},
+	})
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "no renderable text") {
+		t.Errorf("status = %d, body = %s", resp.StatusCode, body)
 	}
 }
