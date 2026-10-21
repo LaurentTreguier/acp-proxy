@@ -81,7 +81,9 @@ type Error struct {
 }
 
 // extractText decodes a message Content field: plain string, null, or an
-// array of content parts ({type:"text", text:"..."} supported).
+// array of content parts. Text parts carry the "text" type in chat
+// completions and Messages-shaped content, and "input_text"/"output_text"
+// in Responses API items.
 func extractText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -97,7 +99,8 @@ func extractText(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		out := ""
 		for _, p := range parts {
-			if p.Type == "text" {
+			switch p.Type {
+			case "text", "input_text", "output_text":
 				if out != "" {
 					out += "\n"
 				}
