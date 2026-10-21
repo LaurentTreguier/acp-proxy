@@ -114,6 +114,20 @@ func makeArchive(t *testing.T) []byte {
 	if _, err := tw.Write([]byte(content)); err != nil {
 		t.Fatal(err)
 	}
+	// Packaging tools (PyInstaller) rely on symlinked runtimes.
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "fake-agent", Linkname: "real-agent", Typeflag: tar.TypeSymlink,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "real-agent", Mode: 0o755, Size: int64(len(content)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +183,16 @@ func TestResolveBinaryInstallsOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(agent.Command); err != nil {
 		t.Errorf("installed binary missing: %v", err)
+	}
+	// fake-agent is a symlink into the archive; it must resolve.
+	linkTarget, err := os.Readlink(agent.Command)
+	if err != nil {
+		t.Errorf("fake-agent should be a symlink: %v", err)
+	} else if linkTarget != "real-agent" {
+		t.Errorf("symlink target = %q, want real-agent", linkTarget)
+	}
+	if _, err := os.Stat(agent.Command); err != nil {
+		t.Errorf("symlinked binary does not resolve: %v", err)
 	}
 	if len(agent.Args) != 1 || agent.Args[0] != "--flag" {
 		t.Errorf("args = %v", agent.Args)

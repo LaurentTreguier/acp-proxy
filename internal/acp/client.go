@@ -5,9 +5,11 @@
 package acp
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"sync"
 	"time"
@@ -26,6 +28,9 @@ const (
 
 // Agent describes how to spawn an ACP agent.
 type Agent struct {
+	// ID identifies the agent in logs and pool bookkeeping.
+	ID string
+	// Command is the executable to spawn as the ACP agent.
 	Command     string
 	Args        []string
 	Dir         string   // working directory; "" means the server's cwd
@@ -41,6 +46,24 @@ type Update struct {
 	MessageID  string
 	ToolCallID string
 	Status     string
+}
+
+// logStderr surfaces agent stderr lines in the proxy log, prefixed with
+// the agent id. Agents log diagnostics (auth failures, startup errors)
+// on stderr; without this their deaths are silent.
+func logStderr(r io.Reader, id string) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		if id != "" {
+			log.Printf("acp[%s] stderr: %s", id, line)
+		} else {
+			log.Printf("acp stderr: %s", line)
+		}
+	}
 }
 
 // Pool lazily spawns agent processes and reuses them. At most one
@@ -163,7 +186,7 @@ func spawn(ctx context.Context, agent Agent) (*Process, error) {
 		return nil, fmt.Errorf("acp: start agent %s: %w", agent.Command, err)
 	}
 	p.process = cmd
-	go io.Copy(io.Discard, stderr)
+	go logStderr(stderr, agent.ID)
 
 	initResp, err := p.conn.Initialize(ctx, sdk.InitializeRequest{
 		ProtocolVersion: sdk.ProtocolVersionNumber,
@@ -184,7 +207,12 @@ func spawn(ctx context.Context, agent Agent) (*Process, error) {
 
 // NewSession opens a fresh ACP session on the process.
 func (p *Process) NewSession(ctx context.Context) (*Session, error) {
-	resp, err := p.conn.NewSession(ctx, sdk.NewSessionRequest{Cwd: p.cwd})
+	// An explicit empty list, not nil: several agents validate
+	// mcpServers as a list and reject JSON null.
+	resp, err := p.conn.NewSession(ctx, sdk.NewSessionRequest{
+		Cwd:        p.cwd,
+		McpServers: []sdk.McpServer{},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("acp: session/new: %w", err)
 	}

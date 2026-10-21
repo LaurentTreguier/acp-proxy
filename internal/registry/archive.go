@@ -13,7 +13,8 @@ import (
 
 // extract unpacks the archive at src into dst. Supported formats: .tar.gz
 // and .zip, detected from the file name. Archive members with paths
-// escaping dst are rejected.
+// escaping dst are rejected. Tar archives support symlinks and hardlinks,
+// which packaging tools (e.g. PyInstaller) rely on.
 func extract(src, dst string) error {
 	if strings.HasSuffix(src, ".zip") {
 		return extractZip(src, dst)
@@ -77,30 +78,88 @@ func extractTarGz(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeDir {
-			continue
-		}
 		target, err := safeJoin(dst, hdr.Name)
 		if err != nil {
 			return err
 		}
-		if hdr.Typeflag == tar.TypeDir {
+		switch hdr.Typeflag {
+		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		mode := os.FileMode(hdr.Mode)
-		if mode == 0 {
-			mode = 0o755
-		}
-		if err := writeFile(target, tr, mode); err != nil {
-			return err
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			mode := os.FileMode(hdr.Mode)
+			if mode == 0 {
+				mode = 0o755
+			}
+			if err := writeFile(target, tr, mode); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			if err := makeSymlink(dst, target, hdr.Linkname); err != nil {
+				return err
+			}
+		case tar.TypeLink:
+			source, err := safeJoin(dst, hdr.Linkname)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			_ = os.Remove(target)
+			if err := os.Link(source, target); err != nil {
+				// Fall back to a copy when the link source is missing
+				// (some archives order hardlinks before their target).
+				if copyFile(source, target) != nil {
+					return fmt.Errorf("hardlink %q -> %q: %w", hdr.Name, hdr.Linkname, err)
+				}
+			}
+		default:
+			// Skip devices, fifos, etc.
 		}
 	}
+}
+
+// makeSymlink creates a symlink at target whose link text is linkname.
+// Absolute link targets and targets escaping dst are rejected: archives
+// may not plant links pointing outside the install directory.
+func makeSymlink(dst, target, linkname string) error {
+	if filepath.IsAbs(linkname) {
+		return fmt.Errorf("symlink %q has absolute target %q", target, linkname)
+	}
+	// The link resolves relative to its own directory; it must stay
+	// inside the install directory.
+	resolved := filepath.Clean(filepath.Join(filepath.Dir(target), linkname))
+	rel, err := filepath.Rel(dst, resolved)
+	if err != nil || rel == ".." || (len(rel) >= 2 && rel[:2] == "..") {
+		return fmt.Errorf("symlink %q target %q escapes install directory", target, linkname)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(target)
+	return os.Symlink(linkname, target)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return nil
 }
 
 // safeJoin joins name under dir, rejecting absolute paths and traversal.
