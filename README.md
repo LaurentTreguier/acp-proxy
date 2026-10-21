@@ -1,18 +1,21 @@
 # acp-proxy
 
-A small web server that exposes an OpenAI-compatible HTTP API and routes
-inbound requests to any [ACP](https://agentclientprotocol.com) (Agent Client
-Protocol) server via a built-in ACP client, backed by
+A small web server that exposes OpenAI- and Anthropic-compatible HTTP
+APIs and routes inbound requests to any
+[ACP](https://agentclientprotocol.com) (Agent Client Protocol) server
+via a built-in ACP client, backed by
 [coder/acp-go-sdk](https://github.com/coder/acp-go-sdk).
 
 ## How it works
 
-- Zero-config: running the binary starts an OpenAI-compatible server with
-  no agent running.
+- Zero-config: running the binary starts a server with no agent running.
 - Agents are resolved **on demand** from the
   [ACP registry](https://agentclientprotocol.com/get-started/registry) by
-  id, through a URL prefix: `/{agent}/v1/chat/completions`. The proxy
-  spawns the agent as a subprocess and speaks ACP over its stdio.
+  id, through a URL prefix: `/{agent}/v1/...`. The proxy spawns the agent
+  as a subprocess and speaks ACP over its stdio.
+- Three API surfaces are served, each scoped to one agent through the
+  prefix: the OpenAI chat completions API, the OpenAI Responses API and
+  the Anthropic Messages API.
 - Registry agents are resolved to a runnable command on first use: `npx`
   distributions run through `npx -y` (which itself caches the package);
   binary distributions first probe the PATH — an agent the user already
@@ -21,7 +24,7 @@ Protocol) server via a built-in ACP client, backed by
   downloaded, sha256-verified and extracted to a cache directory.
 - Each request gets a fresh ACP session on the agent's pooled process,
   released afterwards with `session/close` when the agent supports it.
-  The OpenAI message history is rendered as a single prompt transcript
+  The request's message history is rendered as a single prompt transcript
   for context.
 - `agent_message_chunk` updates become assistant message content, streamed
   via SSE or aggregated for non-streaming requests.
@@ -31,13 +34,13 @@ Protocol) server via a built-in ACP client, backed by
 ```sh
 go build -o acp-proxy .
 ./acp-proxy                 # 127.0.0.1:11734, agents on demand
-./acp-proxy 8080            # positional port
+./acp-proxy 8080            # or any port; the examples below use the default
 
-curl http://127.0.0.1:11734/agents                 # plain text list of agent ids
-curl http://127.0.0.1:11734/claude-acp/v1/models  # one agent, OpenAI-shaped
-curl http://127.0.0.1:11734/claude-acp/v1/chat/completions \
+curl http://127.0.0.1:11734/agents             # plain text list of agent ids
+curl http://127.0.0.1:11734/opencode/v1/models # one agent, OpenAI-shaped
+curl http://127.0.0.1:11734/opencode/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"claude-acp","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"opencode","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 Agents need their own credentials (e.g. `ANTHROPIC_API_KEY`) in the
