@@ -43,13 +43,36 @@ proxy's environment.
 
 ## API
 
-Every completion request is scoped to one agent through the URL prefix.
+Every request is scoped to one agent through the URL prefix. Three
+OpenAI/Anthropic-compatible surfaces are served:
 
 - `GET /agents` — plain text list of every known agent id (one per
   line): the ACP registry plus any statically declared agents.
 - `GET /{agent}/v1/models` — one agent, OpenAI-shaped.
-- `POST /{agent}/v1/chat/completions` — completion routed to that agent,
-  spawned on demand. Same body shape as OpenAI (`messages`, `stream`).
+
+OpenAI API:
+
+- `POST /{agent}/v1/chat/completions` — chat completions (`messages`,
+  `stream`).
+- `POST /{agent}/v1/responses` — the Responses API (`input` as string or
+  items, `instructions`, `stream`, `store`). Responses are held in
+  memory (up to 1024, oldest evicted), so `previous_response_id`
+  follow-ups work: the follow-up reuses the same pooled ACP session,
+  preserving agent-side conversation context. `GET /{agent}/v1/responses/{id}`
+  retrieves a stored response.
+
+Anthropic API:
+
+- `POST /{agent}/v1/messages` — the Messages API (`max_tokens` required,
+  `system`, `messages`, `stream`, `thinking`). With
+  `thinking: {type: "enabled"}`, agent thought chunks are surfaced as
+  thinking content blocks (with an empty signature). Stop reasons map
+  `end_turn`/`cancelled` → `end_turn`, `max_tokens`/`max_turn_requests`
+  → `max_tokens`, `refusal` → `refusal`.
+- `POST /{agent}/v1/messages/count_tokens` — naive estimate (four
+  characters per token; the proxy has no tokenizer).
+
+The unprefixed endpoints return 404 with a hint.
 
 The unprefixed `POST /v1/chat/completions` is not supported and returns
 404 with a hint.
@@ -82,6 +105,9 @@ first: positional port, flags, environment, defaults.
   for them get a JSON-RPC "method not supported" error.
 - Binary archives are verified against the registry's sha256 when
   present and extracted with path-traversal protection.
-- No token accounting (`usage` is zero), no tool-call surface in the
-  OpenAI response, no session reuse across requests (sessions are
-  closed after each request when the agent supports `session/close`).
+- No token accounting (`usage` is zero everywhere, count_tokens is a
+  rough character estimate), no tool-call surface in responses (ACP tool
+  calls are agent-side and not exposed), no function calling on any
+  surface. Sessions are closed after each request when the agent
+  supports `session/close`, except those retained for Responses API
+  follow-ups.

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"acp-proxy/internal/acp"
+	"acp-proxy/internal/anthropic"
 	"acp-proxy/internal/config"
 	"acp-proxy/internal/openai"
 	"acp-proxy/internal/registry"
@@ -63,6 +64,7 @@ func main() {
 	pool := acp.NewPool()
 	defer pool.Close()
 	openai.New(resolver, pool).Register(mux)
+	anthropic.New(resolver, pool).Register(mux)
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 	server := &http.Server{Addr: addr, Handler: mux}
 
