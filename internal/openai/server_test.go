@@ -52,7 +52,7 @@ func testServer(t *testing.T, mode, permissions string) *httptest.Server {
 	pool := acp.NewPool()
 	t.Cleanup(pool.Close)
 	mux := http.NewServeMux()
-	New(&fakeResolver{}, pool).Register(mux)
+	New(&fakeResolver{}, pool, t.TempDir()).Register(mux)
 	return httptest.NewServer(mux)
 }
 

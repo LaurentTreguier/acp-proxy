@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -64,31 +66,48 @@ type responsesResponse struct {
 	Usage            responsesUsage     `json:"usage"`
 }
 
+// turn is one conversation entry in a stored transcript.
+type turn struct {
+	Role string `json:"role"` // user, assistant, system, tool
+	Text string `json:"text"`
+}
+
 // responseStore keeps the ACP session and final response for each
-// created response, enabling previous_response_id follow-ups. Entries
-// are capped; the oldest are evicted and their sessions closed.
+// created response, enabling previous_response_id follow-ups. Live
+// entries are held in memory (capped, oldest evicted); every entry is
+// also written to disk so follow-ups survive a proxy restart — replayed
+// into a fresh ACP session instead of the original one.
 type responseStore struct {
 	mu    sync.Mutex
 	order []string
 	items map[string]storedResponse
 	limit int
+	// dir is the on-disk persistence directory; empty disables disk
+	// persistence.
+	dir string
 }
 
 type storedResponse struct {
-	agentID  string
-	session *acp.Session
-	response *responsesResponse
+	AgentID    string             `json:"agent_id"`
+	Session    *acp.Session       `json:"-"` // nil after a restart
+	Response   *responsesResponse `json:"response"`
+	Transcript []turn             `json:"transcript"`
 }
 
-func newResponseStore(limit int) *responseStore {
-	return &responseStore{items: make(map[string]storedResponse), limit: limit}
+func newResponseStore(limit int, dir string) *responseStore {
+	return &responseStore{items: make(map[string]storedResponse), limit: limit, dir: dir}
 }
 
+// get returns the stored response: from memory when the session is
+// still live, otherwise from disk (with a nil session, marking a cold
+// follow-up).
 func (s *responseStore) get(id string) (storedResponse, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	item, ok := s.items[id]
-	return item, ok
+	if item, ok := s.items[id]; ok {
+		return item, true
+	}
+	return s.readFromDisk(id)
 }
 
 func (s *responseStore) put(id string, item storedResponse) {
@@ -100,16 +119,62 @@ func (s *responseStore) put(id string, item storedResponse) {
 		oldest := s.order[0]
 		s.order = s.order[1:]
 		if evicted, ok := s.items[oldest]; ok {
-			evicted.session.Close()
+			if evicted.Session != nil {
+				evicted.Session.Close()
+			}
 			delete(s.items, oldest)
 		}
 	}
+	s.writeToDisk(id, item)
+}
+
+func (s *responseStore) readFromDisk(id string) (storedResponse, bool) {
+	if s.dir == "" {
+		return storedResponse{}, false
+	}
+	data, err := os.ReadFile(s.diskPath(id))
+	if err != nil {
+		return storedResponse{}, false
+	}
+	var rec storedResponse
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return storedResponse{}, false
+	}
+	return rec, true
+}
+
+func (s *responseStore) writeToDisk(id string, item storedResponse) {
+	if s.dir == "" {
+		return
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(s.diskPath(id), data, 0o644)
+}
+
+func (s *responseStore) diskPath(id string) string {
+	// Response ids are proxy-generated hex; sanitize anyway.
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return -1
+		}
+	}, id)
+	return filepath.Join(s.dir, safe+".json")
 }
 
 // responses handles POST /{agent}/v1/responses. Statefulness:
 // previous_response_id resumes the stored ACP session for the
-// referenced response; responses are stored in memory unless the request
-// sets store=false.
+// referenced response when it is still live; after a proxy restart the
+// stored transcript is replayed into a fresh session. Responses are held
+// in memory (and on disk) unless the request sets store=false.
 func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	var req responsesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -129,7 +194,7 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	store := req.Store == nil || *req.Store
-	session, followUp, err := s.responsesSession(w, r, agentID, agent, req.PreviousResponse)
+	session, prior, followUp, err := s.responsesSession(w, r, agentID, agent, req.PreviousResponse)
 	if err != nil {
 		return // response already written
 	}
@@ -140,35 +205,51 @@ func (s *Server) responses(w http.ResponseWriter, r *http.Request) {
 			"input contains no renderable text content")
 		return
 	}
+	// Cold follow-up: the previous ACP session died with a restart; the
+	// stored transcript carries the conversation into a fresh session.
+	if prior.Session == nil && prior.Response != nil {
+		prompt = renderTranscript(prior.Transcript) + "\n\n" + prompt
+	}
 
 	if req.Stream {
-		s.streamResponse(w, r, session, req, agentID, prompt, store, followUp)
+		s.streamResponse(w, r, session, req, agentID, prompt, store, followUp, prior)
 		return
 	}
-	s.blockingResponse(w, r, session, req, agentID, prompt, store, followUp)
+	s.blockingResponse(w, r, session, req, agentID, prompt, store, followUp, prior)
 }
 
-// responsesSession returns the session to run on: the stored session of
-// a previous response (follow-up), or a fresh pooled session.
-func (s *Server) responsesSession(w http.ResponseWriter, r *http.Request, agentID string, agent acp.Agent, previousID string) (*acp.Session, bool, error) {
+// responsesSession returns the session to run on and the stored record
+// of the previous response (zero for fresh requests): the live session
+// for a warm follow-up, a fresh pooled session for a cold one (found
+// only on disk), or a fresh session for a new conversation.
+func (s *Server) responsesSession(w http.ResponseWriter, r *http.Request, agentID string, agent acp.Agent, previousID string) (*acp.Session, storedResponse, bool, error) {
 	if previousID != "" {
 		stored, ok := s.respStore.get(previousID)
 		if !ok {
 			writeError(w, http.StatusNotFound, "invalid_request_error",
 				fmt.Sprintf("No response found with ID '%s'.", previousID))
-			return nil, false, errors.New("not found")
+			return nil, storedResponse{}, false, errors.New("not found")
 		}
-		return stored.session, true, nil
+		if stored.Session != nil {
+			return stored.Session, stored, true, nil
+		}
+		// Cold follow-up: replay on a fresh session.
+		session, err := s.pool.Session(r.Context(), agentID, agent)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "server_error", err.Error())
+			return nil, stored, false, err
+		}
+		return session, stored, true, nil
 	}
 	session, err := s.pool.Session(r.Context(), agentID, agent)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "server_error", err.Error())
-		return nil, false, err
+		return nil, storedResponse{}, false, err
 	}
-	return session, false, nil
+	return session, storedResponse{}, false, nil
 }
 
-func (s *Server) blockingResponse(w http.ResponseWriter, r *http.Request, session *acp.Session, req responsesRequest, agentID, prompt string, store, followUp bool) {
+func (s *Server) blockingResponse(w http.ResponseWriter, r *http.Request, session *acp.Session, req responsesRequest, agentID, prompt string, store, followUp bool, prior storedResponse) {
 	var text strings.Builder
 	stopReason, err := session.Prompt(r.Context(), prompt, func(u acp.Update) {
 		if u.Kind == acp.KindAgentMessage {
@@ -176,7 +257,7 @@ func (s *Server) blockingResponse(w http.ResponseWriter, r *http.Request, sessio
 		}
 	})
 	if err != nil {
-		if !followUp {
+		if !prior.live() {
 			session.Close()
 		}
 		writeError(w, http.StatusBadGateway, "server_error", "agent failed: "+err.Error())
@@ -194,11 +275,11 @@ func (s *Server) blockingResponse(w http.ResponseWriter, r *http.Request, sessio
 		resp.IncompleteDetails = &incompleteDetails{Reason: "max_output_tokens"}
 	}
 
-	s.finishResponses(resp, session, agentID, store, followUp)
+	s.finishResponses(resp, session, agentID, store, prior, req, text.String())
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, session *acp.Session, req responsesRequest, agentID, prompt string, store, followUp bool) {
+func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, session *acp.Session, req responsesRequest, agentID, prompt string, store, followUp bool, prior storedResponse) {
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -257,12 +338,12 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, session 
 	resp.Output = []outputItem{item}
 
 	if err != nil {
-		s.finishResponses(resp, session, agentID, false, followUp)
+		s.finishResponses(resp, session, agentID, false, prior, req, text.String())
 		send("response.failed", map[string]any{
 			"response": failedResponse(resp, "agent failed: "+err.Error())})
 		return
 	}
-	s.finishResponses(resp, session, agentID, store, followUp)
+	s.finishResponses(resp, session, agentID, store, prior, req, text.String())
 	if resp.Status == "incomplete" {
 		send("response.incomplete", map[string]any{"response": resp})
 	} else {
@@ -271,17 +352,37 @@ func (s *Server) streamResponse(w http.ResponseWriter, r *http.Request, session 
 }
 
 // finishResponses stores (or closes) the session backing a response.
-func (s *Server) finishResponses(resp responsesResponse, session *acp.Session, agentID string, store, followUp bool) {
+func (s *Server) finishResponses(resp responsesResponse, session *acp.Session, agentID string, store bool, prior storedResponse, req responsesRequest, reply string) {
 	if store {
+		// Accumulate the conversation transcript: the prior chain plus
+		// this turn's input and the agent's reply.
+		transcript := make([]turn, 0, len(prior.Transcript)+3)
+		transcript = append(transcript, prior.Transcript...)
+		if !followUpOf(prior) {
+			if req.Instructions != "" {
+				transcript = append(transcript, turn{Role: "system", Text: req.Instructions})
+			}
+		}
+		transcript = append(transcript, turnsFromInput(req.Input)...)
+		transcript = append(transcript, turn{Role: "assistant", Text: reply})
+
 		s.respStore.put(resp.ID, storedResponse{
-			agentID: agentID, session: session, response: &resp,
+			AgentID:    agentID,
+			Session:    session,
+			Response:   &resp,
+			Transcript: transcript,
 		})
 		return
 	}
-	if !followUp {
+	if session != nil && !prior.live() {
 		session.Close()
 	}
 }
+
+// live reports whether the stored record carries a live ACP session.
+func (s storedResponse) live() bool { return s.Session != nil }
+
+func followUpOf(prior storedResponse) bool { return prior.Response != nil }
 
 // getResponse handles GET /{agent}/v1/responses/{id}: returns a stored
 // response.
@@ -292,7 +393,7 @@ func (s *Server) getResponse(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("No response found with ID '%s'.", r.PathValue("id")))
 		return
 	}
-	writeJSON(w, http.StatusOK, stored.response)
+	writeJSON(w, http.StatusOK, stored.Response)
 }
 
 func newResponsesResponse(req responsesRequest) responsesResponse {
@@ -333,6 +434,55 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// turnsFromInput extracts conversation turns from a Responses input
+// field, for transcript persistence.
+func turnsFromInput(input json.RawMessage) []turn {
+	var s string
+	if err := json.Unmarshal(input, &s); err == nil {
+		if s != "" {
+			return []turn{{Role: "user", Text: s}}
+		}
+		return nil
+	}
+	var items []struct {
+		Type    string          `json:"type"`
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+		CallID  string          `json:"call_id"`
+		Output  string          `json:"output"`
+	}
+	if err := json.Unmarshal(input, &items); err != nil {
+		return nil
+	}
+	var turns []turn
+	for _, it := range items {
+		switch {
+		case it.Type == "function_call_output":
+			turns = append(turns, turn{Role: "tool", Text: it.Output})
+		case it.Role != "":
+			turns = append(turns, turn{Role: it.Role, Text: extractText(it.Content)})
+		}
+	}
+	return turns
+}
+
+// renderTranscript renders stored turns back into a prompt, for replaying
+// a conversation into a fresh ACP session after a restart.
+func renderTranscript(turns []turn) string {
+	var sb strings.Builder
+	for _, t := range turns {
+		switch t.Role {
+		case "system":
+			fmt.Fprintf(&sb, "[System instructions]\n%s\n\n", t.Text)
+		case "tool":
+			fmt.Fprintf(&sb, "[tool result] %s\n", t.Text)
+		default:
+			fmt.Fprintf(&sb, "%s: %s\n", roleLabel(t.Role), t.Text)
+		}
+	}
+	return strings.TrimSuffix(sb.String(), "\n")
 }
 
 // renderResponsesInput turns the Responses input field into a prompt

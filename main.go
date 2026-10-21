@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -64,7 +65,11 @@ func main() {
 	mux := http.NewServeMux()
 	pool := acp.NewPool()
 	defer pool.Close()
-	openai.New(resolver, pool).Register(mux)
+	cacheDir := opts.CacheDir
+	if cacheDir == "" {
+		cacheDir = registry.DefaultCacheDir()
+	}
+	openai.New(resolver, pool, filepath.Join(cacheDir, "responses")).Register(mux)
 	anthropic.New(resolver, pool).Register(mux)
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 	server := &http.Server{Addr: addr, Handler: mux}

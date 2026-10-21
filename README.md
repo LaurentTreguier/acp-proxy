@@ -56,10 +56,11 @@ OpenAI API:
   `stream`).
 - `POST /{agent}/v1/responses` — the Responses API (`input` as string or
   items, `instructions`, `stream`, `store`). Responses are held in
-  memory (up to 1024, oldest evicted), so `previous_response_id`
-  follow-ups work: the follow-up reuses the same pooled ACP session,
-  preserving agent-side conversation context. `GET /{agent}/v1/responses/{id}`
-  retrieves a stored response.
+  memory (up to 1024, oldest evicted) **and persisted to disk** under
+  `<cache-dir>/responses/`, so `previous_response_id` follow-ups work
+  across proxy restarts: live sessions are resumed directly, while
+  post-restart follow-ups replay the stored transcript into a fresh ACP
+  session. `GET /{agent}/v1/responses/{id}` retrieves a stored response.
 
 Anthropic API:
 

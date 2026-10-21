@@ -51,9 +51,10 @@ type Server struct {
 }
 
 // New builds a Server on top of an agent resolver and an agent process
-// pool.
-func New(resolver Resolver, pool *acp.Pool) *Server {
-	return &Server{resolver: resolver, pool: pool, respStore: newResponseStore(1024)}
+// pool. responsesDir is where Responses API records are persisted so
+// conversations survive restarts; empty disables disk persistence.
+func New(resolver Resolver, pool *acp.Pool, responsesDir string) *Server {
+	return &Server{resolver: resolver, pool: pool, respStore: newResponseStore(1024, responsesDir)}
 }
 
 // Register wires the API onto an http.ServeMux. Every request is scoped
