@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"acp-proxy/internal/acp"
 )
 
 func responsesServer(t *testing.T, mode string) *testHarness {
@@ -93,6 +96,82 @@ func TestResponsesPreviousUnknown(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, body = %s", resp.StatusCode, body)
+	}
+}
+
+// TestResponsesSurvivesRestart simulates a proxy restart: a response is
+// created, the pool (and every ACP session) dies, and a new server with
+// the same persistence directory continues the conversation by replaying
+// the stored transcript.
+func TestResponsesSurvivesRestart(t *testing.T) {
+	t.Setenv("ACP_MOCK_AGENT", "1")
+	t.Setenv("ACP_MOCK_MODE", "plain")
+	t.Setenv("MOCK_PERMISSIONS", "cancel")
+
+	dir := t.TempDir()
+
+	poolA := acp.NewPool()
+	muxA := http.NewServeMux()
+	New(&fakeResolver{}, poolA, dir).Register(muxA)
+	srvA := httptest.NewServer(muxA)
+
+	_, body := post(t, srvA.URL+"/mock/v1/responses", map[string]any{
+		"model": "gpt-x", "instructions": "be brief", "input": "hello",
+	})
+	srvA.Close()
+	poolA.Close() // kills the agent process and its sessions, like a restart
+
+	var first responsesResponse
+	if err := json.Unmarshal([]byte(body), &first); err != nil {
+		t.Fatal(err)
+	}
+
+	// A brand-new server (fresh pool, same responses dir) continues the
+	// conversation from the previous_response_id.
+	poolB := acp.NewPool()
+	defer poolB.Close()
+	serverB := New(&fakeResolver{}, poolB, dir)
+	muxB := http.NewServeMux()
+	serverB.Register(muxB)
+	srvB := httptest.NewServer(muxB)
+	defer srvB.Close()
+
+	resp, body := post(t, srvB.URL+"/mock/v1/responses", map[string]any{
+		"model": "gpt-x", "input": "and then?",
+		"previous_response_id": first.ID,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("post-restart follow-up status = %d, body = %s", resp.StatusCode, body)
+	}
+	var second responsesResponse
+	if err := json.Unmarshal([]byte(body), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID {
+		t.Error("follow-up must create a new response id")
+	}
+	if second.OutputText != "Hello ACP" {
+		t.Errorf("post-restart output_text = %q", second.OutputText)
+	}
+
+	// The follow-up's own record must carry the accumulated transcript,
+	// including the pre-restart turns.
+	stored, ok := serverB.respStore.get(second.ID)
+	if !ok {
+		t.Fatal("second response must be stored")
+	}
+	var wantRoles []string
+	for _, tr := range stored.Transcript {
+		wantRoles = append(wantRoles, tr.Role)
+	}
+	if len(stored.Transcript) < 4 {
+		t.Fatalf("transcript = %+v, want system + user + assistant + new user + new assistant", stored.Transcript)
+	}
+	if stored.Transcript[0].Role != "system" || stored.Transcript[0].Text != "be brief" {
+		t.Errorf("first turn = %+v, want stored instructions", stored.Transcript[0])
+	}
+	if last := stored.Transcript[len(stored.Transcript)-1]; last.Role != "assistant" || last.Text != "Hello ACP" {
+		t.Errorf("last turn = %+v, want assistant reply", last)
 	}
 }
 

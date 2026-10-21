@@ -32,6 +32,15 @@ type Client struct {
 	http      *http.Client
 }
 
+// DefaultCacheDir is where downloaded agent binaries and persisted state
+// live when not overridden: the user cache directory.
+func DefaultCacheDir() string {
+	if d, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(d, "acp-proxy")
+	}
+	return ".acp-proxy-cache"
+}
+
 // New creates a registry client. Static agents (by id) take precedence
 // over registry entries; dir and perm apply to every resolved agent. An
 // empty url selects the official ACP registry; an empty cacheDir selects
@@ -41,11 +50,7 @@ func New(url, cacheDir, dir, perm string, static map[string]acp.Agent) *Client {
 		url = DefaultURL
 	}
 	if cacheDir == "" {
-		if d, err := os.UserCacheDir(); err == nil {
-			cacheDir = filepath.Join(d, "acp-proxy")
-		} else {
-			cacheDir = ".acp-proxy-cache"
-		}
+		cacheDir = DefaultCacheDir()
 	}
 	return &Client{
 		url:      url,
