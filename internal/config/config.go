@@ -20,14 +20,15 @@ const envPrefix = "ACP_PROXY_"
 // alternate port.
 const DefaultPort = 11734
 
-// DefaultModel is the model name given to an agent spec without an
+// DefaultAgentID is the agent id given to an agent spec without an
 // explicit "name=" prefix.
-const DefaultModel = "default"
+const DefaultAgentID = "default"
 
-// Agent maps an OpenAI model name to an ACP agent command.
+// Agent maps an agent id to an ACP agent command.
 type Agent struct {
-	// Model is the name exposed through the OpenAI-compatible API.
-	Model string
+	// ID is the agent id used in the URL prefix; it overrides registry
+	// entries with the same id.
+	ID string
 	// Command is the executable to spawn as the ACP agent.
 	Command string
 	// Args are the command-line arguments passed to the agent.
@@ -142,22 +143,12 @@ func (o *Options) validate() error {
 	}
 	seen := make(map[string]bool, len(o.Agents))
 	for i, a := range o.Agents {
-		if seen[a.Model] {
-			return fmt.Errorf("agent %d: duplicate model %q", i, a.Model)
+		if seen[a.ID] {
+			return fmt.Errorf("agent %d: duplicate agent id %q", i, a.ID)
 		}
-		seen[a.Model] = true
+		seen[a.ID] = true
 	}
 	return nil
-}
-
-// Agent returns the agent configured for a model name.
-func (o *Options) Agent(model string) (Agent, bool) {
-	for _, a := range o.Agents {
-		if a.Model == model {
-			return a, true
-		}
-	}
-	return Agent{}, false
 }
 
 // PermissionPolicy returns the acp permission policy implied by
@@ -170,7 +161,7 @@ func (o *Options) PermissionPolicy() string {
 }
 
 // ParseAgentSpec parses an agent spec: `[name=]command [args...]`.
-// Without a "name=" prefix the agent is exposed as model "default".
+// Without a "name=" prefix the agent is exposed under the id "default".
 // The command and its arguments are split on whitespace.
 func ParseAgentSpec(spec string) (Agent, error) {
 	spec = strings.TrimSpace(spec)
@@ -187,9 +178,9 @@ func ParseAgentSpec(spec string) (Agent, error) {
 		return Agent{}, fmt.Errorf("agent spec %q has no command", spec)
 	}
 	if name == "" {
-		name = DefaultModel
+		name = DefaultAgentID
 	}
-	return Agent{Model: name, Command: fields[0], Args: fields[1:]}, nil
+	return Agent{ID: name, Command: fields[0], Args: fields[1:]}, nil
 }
 
 func parseBoolEnv(v string) bool {
